@@ -123,10 +123,7 @@
         headerBorder: '#CFC6B4',
         uiText: '#2B2A27',
         topoLine: '#D5CDBE',
-        streetPrimary: '#4A463F',
-        streetSecondary: '#8C8578',
         labelBg: '#F4EFE6',
-        labelBorder: '#8C8578',
         labelText: '#2B2A27',
         userMarker: '#D1493B'
       },
@@ -137,14 +134,51 @@
         headerBorder: '#273E34',
         uiText: '#E8E2D5',
         topoLine: '#253F35',
-        streetPrimary: '#C8D1C6',
-        streetSecondary: '#62786D',
         labelBg: '#13221C',
-        labelBorder: '#62786D',
         labelText: '#E8E2D5',
         userMarker: '#E85D4A'
       }
     };
+
+    // ==========================================
+    // PALETA CROMÁTICA POR DISTRITO (10 DISTRITOS DE BARCELONA)
+    // ==========================================
+    const DISTRICT_COLORS = {
+      ciutatvella:        { light: '#8F4A6A', dark: '#CC7DA1' },
+      eixample:           { light: '#9E7322', dark: '#D4AA57' },
+      santsmontjuic:      { light: '#3A658A', dark: '#73A6CF' },
+      lescorts:           { light: '#77538A', dark: '#B48EC9' },
+      sarriasantgervasi:  { light: '#3B7556', dark: '#6EC094' },
+      gracia:             { light: '#A35564', dark: '#DE8C9B' },
+      hortaguinardo:      { light: '#535C99', dark: '#8891CF' },
+      noubarris:          { light: '#677830', dark: '#A5B863' },
+      santandreu:         { light: '#945334', dark: '#D18760' },
+      santmarti:          { light: '#2A7275', dark: '#5EB9BD' }
+    };
+
+    const DISTRICT_FALLBACK_COLOR = {
+      light: '#6E685F',
+      dark: '#7E9187'
+    };
+
+    function normalizeDistrictName(name) {
+      if (!name) return "";
+      return name
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/\bst\b/g, "sant")
+        .replace(/[^a-z0-9]/g, "");
+    }
+
+    function getDistrictColor(districtKeyOrName, themeKey) {
+      const norm = normalizeDistrictName(districtKeyOrName);
+      const entry = DISTRICT_COLORS[norm];
+      if (entry) {
+        return themeKey === 'dark' ? entry.dark : entry.light;
+      }
+      return themeKey === 'dark' ? DISTRICT_FALLBACK_COLOR.dark : DISTRICT_FALLBACK_COLOR.light;
+    }
 
     let currentThemeKey = 'light';
     try {
@@ -199,23 +233,24 @@
     }
 
     // ==========================================
-    // CACHÉ LOCAL PERSISTENTE (v5 Silencio Cartográfico)
+    // CACHÉ LOCAL PERSISTENTE (v6 Codificación por Distritos)
     // ==========================================
     try {
       localStorage.removeItem('compas_cached_map');
       localStorage.removeItem('compas_map_cached_v1');
+      localStorage.removeItem('compas_map_v4_wide');
     } catch(e) {}
 
     function saveMapCache(lat, lon, segments) {
       try {
         const data = { lat, lon, segments, ts: Date.now() };
-        localStorage.setItem('compas_map_v5_carto', JSON.stringify(data));
+        localStorage.setItem('compas_map_v6_districts', JSON.stringify(data));
       } catch(e) {}
     }
 
     function loadMapCache(lat, lon) {
       try {
-        const raw = localStorage.getItem('compas_map_v5_carto');
+        const raw = localStorage.getItem('compas_map_v6_districts');
         if (!raw) return null;
         const data = JSON.parse(raw);
         const dLat = (data.lat - lat) * 111132;
@@ -263,6 +298,8 @@
       accuracy: null,
       currentStreet: "--",
       districtNeighborhood: "UBICACIÓN REAL",
+      currentDistrict: null,
+      currentDistrictKey: null,
       gyroActive: false,
       gpsActive: false
     };
@@ -389,6 +426,7 @@
       { barri: 'LA SAGRERA', dist: 'SANT ANDREU', lat: 41.4240, lon: 2.1880 },
       { barri: 'CONGRÉS I ELS INDIANS', dist: 'SANT ANDREU', lat: 41.4230, lon: 2.1800 },
       { barri: 'NAVAS', dist: 'SANT ANDREU', lat: 41.4170, lon: 2.1830 },
+      { barri: "CAMP D'EN GRASSOT I GRÀCIA NOVA", dist: 'GRÀCIA', lat: 41.4060, lon: 2.1640 },
       { barri: "CAMP DE L'ARPA DEL CLOT", dist: 'SANT MARTÍ', lat: 41.4110, lon: 2.1810 },
       { barri: 'EL CLOT', dist: 'SANT MARTÍ', lat: 41.4080, lon: 2.1880 },
       { barri: 'PARC I LA LLACUNA', dist: 'SANT MARTÍ', lat: 41.3980, lon: 2.1900 },
@@ -419,6 +457,14 @@
         }
       }
       return best;
+    }
+
+    function getBarcelonaDistrictKey(lat, lon) {
+      if (lat < 41.30 || lat > 41.48 || lon < 2.05 || lon > 2.25) {
+        return null;
+      }
+      const bcn = getBarcelonaDistrictAndBarri(lat, lon);
+      return bcn ? normalizeDistrictName(bcn.dist) : null;
     }
 
     function splitStreetNameToLines(name) {
@@ -471,6 +517,8 @@
           if (bcn) {
             const zoneText = `${bcn.dist} | ${bcn.barri}`;
             window.compasState.districtNeighborhood = zoneText;
+            window.compasState.currentDistrict = bcn.dist;
+            window.compasState.currentDistrictKey = normalizeDistrictName(bcn.dist);
             vZone.textContent = zoneText;
           } else {
             let district = addr.city_district || addr.suburb || addr.borough || addr.county || addr.city || "UBICACIÓN REAL";
@@ -484,6 +532,8 @@
             if (zoneText.length > 34) zoneText = zoneText.substring(0, 34);
 
             window.compasState.districtNeighborhood = zoneText;
+            window.compasState.currentDistrict = district;
+            window.compasState.currentDistrictKey = normalizeDistrictName(district);
             vZone.textContent = zoneText;
           }
         }
@@ -583,13 +633,17 @@
           const rawName = names[s[4]] || "";
           const name = formatStreetName(rawName);
           const isArterial = (s[5] === 4) || isMajorArterialName(name);
+          const distKey = getBarcelonaDistrictKey(midLat, midLon);
+
           localSegs.push({
             x1: Math.round(p1.x),
             y1: Math.round(p1.y),
             x2: Math.round(p2.x),
             y2: Math.round(p2.y),
             name: name,
-            isMajor: isArterial
+            isMajor: isArterial,
+            districtKey: distKey,
+            opacity: 1.0
           });
         }
       }
@@ -705,7 +759,17 @@
                 const y1 = Math.round(pts[i].y);
                 const x2 = Math.round(pts[i + 1].x);
                 const y2 = Math.round(pts[i + 1].y);
-                newSegs.push({ x1, y1, x2, y2, name, isMajor: isArterial });
+                const midLat = (elem.geometry[i].lat + elem.geometry[i + 1].lat) * 0.5;
+                const midLon = (elem.geometry[i].lon + elem.geometry[i + 1].lon) * 0.5;
+                const distKey = getBarcelonaDistrictKey(midLat, midLon);
+
+                newSegs.push({
+                  x1, y1, x2, y2,
+                  name,
+                  isMajor: isArterial,
+                  districtKey: distKey,
+                  opacity: 1.0
+                });
               }
             }
             if (newSegs.length >= 1100) break;
@@ -738,8 +802,7 @@
 
     async function forceRefreshMap() {
       try {
-        localStorage.removeItem('compas_map_v5_carto');
-        localStorage.removeItem('compas_map_v4_wide');
+        localStorage.removeItem('compas_map_v6_districts');
       } catch(e) {}
       if (window.compasState.userLat !== null) {
         const lat = window.compasState.userLat;
@@ -758,7 +821,7 @@
 
     // ==========================================
     // MOTOR DE RENDERIZADO CARTOGRÁFICO
-    // Enfoque "Silencio Cartográfico": Calidez táctil, jerarquía por contraste/grosor y 60 FPS
+    // Enfoque "Silencio Cartográfico": Calidez táctil, codificación vial por distritos y 60 FPS
     // ==========================================
     function renderOLED() {
       const theme = THEMES[currentThemeKey];
@@ -769,7 +832,7 @@
 
       // Si aún no hay GPS ni mapa, mostrar radar cartográfico limpio
       if (!originInitialized || mapSegments.length === 0) {
-        ctx.strokeStyle = theme.streetSecondary;
+        ctx.strokeStyle = getDistrictColor(null, currentThemeKey);
         ctx.lineWidth = 1;
         ctx.beginPath();
         const pulse = (Date.now() / 25) % 65;
@@ -862,9 +925,8 @@
         ctx.restore();
       }
 
-      // 2. CAPA 1: RED VIAL (Jerarquía exclusivamente por grosor y contraste)
-      const linesSecondary = [];
-      const linesPrimary = [];
+      // 2. CAPA 1: RED VIAL (Color por distrito, grosor por jerarquía, opacidad preparada)
+      const districtBatches = {};
       const visibleCandidates = [];
 
       for (let i = 0; i < mapSegments.length; i++) {
@@ -896,10 +958,23 @@
         const sy2 = Math.round(CENTER_Y - ry2 * currentPixelsPerMeter);
 
         const isMajor = !!seg.isMajor;
+        const distKey = seg.districtKey || 'fallback';
+        const op = (typeof seg.opacity === 'number') ? seg.opacity : 1.0;
+
+        if (!districtBatches[distKey]) {
+          districtBatches[distKey] = {
+            sec: [],
+            pri: [],
+            color: getDistrictColor(distKey, currentThemeKey),
+            opacity: op
+          };
+        }
+
+        const batch = districtBatches[distKey];
         if (isMajor) {
-          linesPrimary.push(sx1, sy1, sx2, sy2);
+          batch.pri.push(sx1, sy1, sx2, sy2);
         } else {
-          linesSecondary.push(sx1, sy1, sx2, sy2);
+          batch.sec.push(sx1, sy1, sx2, sy2);
         }
 
         // Candidatos con nombre para etiquetas flotantes
@@ -910,37 +985,48 @@
             visibleCandidates.push({
               name: seg.name,
               mx, my,
-              isMajor: isMajor
+              isMajor: isMajor,
+              districtKey: distKey
             });
           }
         }
       }
 
-      // Dibujar calles secundarias primero (trazo fino y suave)
-      if (linesSecondary.length > 0) {
-        ctx.strokeStyle = theme.streetSecondary;
-        ctx.lineWidth = 1.1;
+      // Dibujar calles secundarias primero (trazo fino 1.1px, color de su distrito)
+      ctx.lineWidth = 1.1;
+      for (const key in districtBatches) {
+        const batch = districtBatches[key];
+        if (batch.sec.length === 0) continue;
+        ctx.save();
+        ctx.strokeStyle = batch.color;
+        if (batch.opacity < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, batch.opacity));
         ctx.beginPath();
-        for (let j = 0; j < linesSecondary.length; j += 4) {
-          ctx.moveTo(linesSecondary[j], linesSecondary[j + 1]);
-          ctx.lineTo(linesSecondary[j + 2], linesSecondary[j + 3]);
+        for (let j = 0; j < batch.sec.length; j += 4) {
+          ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
+          ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
         }
         ctx.stroke();
+        ctx.restore();
       }
 
-      // Dibujar vías principales encima (trazo más grueso y contrastado)
-      if (linesPrimary.length > 0) {
-        ctx.strokeStyle = theme.streetPrimary;
-        ctx.lineWidth = 2.4;
+      // Dibujar vías principales encima (trazo más grueso 2.4px, color de su distrito)
+      ctx.lineWidth = 2.4;
+      for (const key in districtBatches) {
+        const batch = districtBatches[key];
+        if (batch.pri.length === 0) continue;
+        ctx.save();
+        ctx.strokeStyle = batch.color;
+        if (batch.opacity < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, batch.opacity));
         ctx.beginPath();
-        for (let j = 0; j < linesPrimary.length; j += 4) {
-          ctx.moveTo(linesPrimary[j], linesPrimary[j + 1]);
-          ctx.lineTo(linesPrimary[j + 2], linesPrimary[j + 3]);
+        for (let j = 0; j < batch.pri.length; j += 4) {
+          ctx.moveTo(batch.pri[j], batch.pri[j + 1]);
+          ctx.lineTo(batch.pri[j + 2], batch.pri[j + 3]);
         }
         ctx.stroke();
+        ctx.restore();
       }
 
-      // 3. ETIQUETAS FLOTANTES SINÉRGICAS (Alto contraste, sin color heredado, bordes redondeados 2px)
+      // 3. ETIQUETAS FLOTANTES SINÉRGICAS (Alto contraste, borde con color de distrito, esquinas 2px)
       const zoomProgress = Math.max(0, (smoothViewMeters - VIEW_METERS_NORMAL) / (VIEW_METERS_PEEK - VIEW_METERS_NORMAL));
       const labelOpacity = Math.max(0, 1.0 - zoomProgress * 1.6);
       if (labelOpacity > 0.05) {
@@ -968,6 +1054,7 @@
           if (overlap) continue;
 
           const lines = splitStreetNameToLines(item.name);
+          const badgeBorderColor = getDistrictColor(item.districtKey, currentThemeKey);
 
           if (lines.length === 1) {
             const tw = ctx.measureText(lines[0]).width;
@@ -976,7 +1063,7 @@
             const bx = Math.round(item.mx - badgeW / 2);
             const by = Math.round(item.my - badgeH / 2);
 
-            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, theme.labelBorder);
+            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
 
             ctx.fillStyle = theme.labelText;
             ctx.textAlign = "center";
@@ -990,7 +1077,7 @@
             const bx = Math.round(item.mx - badgeW / 2);
             const by = Math.round(item.my - badgeH / 2);
 
-            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, theme.labelBorder);
+            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
 
             ctx.fillStyle = theme.labelText;
             ctx.textAlign = "center";
@@ -1005,7 +1092,7 @@
         ctx.restore();
       }
 
-      // 4. HUD SUPERIOR: ENCABEZADO "DISTRITO | BARRIO" + BOTÓN SOL/LUNA
+      // 4. HUD SUPERIOR: ENCABEZADO "DISTRITO | BARRIO" + PUNTO 7PX DEL DISTRITO + BOTÓN SOL/LUNA
       ctx.fillStyle = theme.headerBg;
       ctx.fillRect(0, 0, SCREEN_W, 22);
       ctx.strokeStyle = theme.headerBorder;
@@ -1020,13 +1107,11 @@
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = theme.uiText;
       if (currentThemeKey === "light") {
-        // En Modo Claro: Ícono de Luna creciente (para alternar a modo oscuro)
         ctx.beginPath();
         ctx.arc(12, 11, 4.2, -0.6 * Math.PI, 0.8 * Math.PI, false);
         ctx.quadraticCurveTo(11.2, 11, 12 + 4.2 * Math.cos(-0.6 * Math.PI), 11 + 4.2 * Math.sin(-0.6 * Math.PI));
         ctx.stroke();
       } else {
-        // En Modo Oscuro: Ícono de Sol radiante (para alternar a modo claro)
         ctx.beginPath();
         ctx.arc(12, 11, 2.5, 0, Math.PI * 2);
         for (let a = 0; a < 8; a++) {
@@ -1039,19 +1124,42 @@
       }
       ctx.restore();
 
-      // Encabezado superior en mayúsculas con espaciado de letras 0.08em
+      // Encabezado con punto de 7px del color del distrito + texto en mayúsculas
       ctx.save();
-      ctx.fillStyle = theme.uiText;
       const zoneStr = (window.compasState.districtNeighborhood || "UBICACIÓN REAL").toUpperCase();
+      const currentDistKey = window.compasState.currentDistrictKey || null;
+      const currentDistColor = getDistrictColor(currentDistKey, currentThemeKey);
+
       if ("letterSpacing" in ctx) ctx.letterSpacing = "0.08em";
       if (zoneStr.length > 25) {
         ctx.font = "600 8.5px 'IBM Plex Mono', monospace";
       } else {
         ctx.font = "600 9.5px 'IBM Plex Mono', monospace";
       }
-      ctx.textAlign = "center";
+
+      const tw = ctx.measureText(zoneStr).width;
+      const dotDiameter = 7;
+      const dotRadius = 3.5;
+      const gap = 6;
+      const totalHeaderWidth = dotDiameter + gap + tw;
+
+      let headerStartX = Math.round(CENTER_X - totalHeaderWidth / 2);
+      if (headerStartX < 28) headerStartX = 28;
+
+      const dotCenterX = headerStartX + dotRadius;
+      const textStartX = headerStartX + dotDiameter + gap;
+
+      // Punto circular de 7px con el color del distrito actual (dinámico al cambiar de zona o modo)
+      ctx.fillStyle = currentDistColor;
+      ctx.beginPath();
+      ctx.arc(dotCenterX, 11.5, dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Nombre del distrito / barrio
+      ctx.fillStyle = theme.uiText;
+      ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(zoneStr, CENTER_X + 6, 11.5);
+      ctx.fillText(zoneStr, textStartX, 11.5);
       ctx.restore();
 
       // 5. MARCADOR DE POSICIÓN DEL USUARIO (Centro 128, 128)
@@ -1261,6 +1369,8 @@
             if (bcn) {
               const zoneText = `${bcn.dist} | ${bcn.barri}`;
               window.compasState.districtNeighborhood = zoneText;
+              window.compasState.currentDistrict = bcn.dist;
+              window.compasState.currentDistrictKey = normalizeDistrictName(bcn.dist);
               vZone.textContent = zoneText;
             }
 
@@ -1274,6 +1384,14 @@
           if (bcnMasterData && lastSlicedLat !== null) {
             const moveDist = Math.hypot((lat - lastSlicedLat) * 111132, (lon - lastSlicedLon) * 83362);
             if (moveDist > 150) {
+              const bcn = getBarcelonaDistrictAndBarri(lat, lon);
+              if (bcn) {
+                const zoneText = `${bcn.dist} | ${bcn.barri}`;
+                window.compasState.districtNeighborhood = zoneText;
+                window.compasState.currentDistrict = bcn.dist;
+                window.compasState.currentDistrictKey = normalizeDistrictName(bcn.dist);
+                vZone.textContent = zoneText;
+              }
               sliceLocalSegmentsFromMaster(lat, lon);
               if (bcnTopographyData) {
                 sliceTopographyFromMaster(lat, lon);
