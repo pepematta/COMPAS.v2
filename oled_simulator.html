@@ -127,10 +127,10 @@
     // Escala del mapa con soporte de Slider Vertical continuo:
     // - Vista normal en reposo: 240 metros
     // - Base al presionar la pantalla: 520 metros
-    // - Zoom máximo al deslizar hacia abajo: 1500 metros
+    // - Zoom máximo al deslizar hacia abajo: 3500 metros
     const VIEW_METERS_NORMAL = 240.0;
     const VIEW_METERS_PEEK   = 520.0;
-    const VIEW_METERS_MAX    = 1500.0;
+    const VIEW_METERS_MAX    = 3500.0;
 
     let isPressing = false;
     let touchStartY = 0;
@@ -448,7 +448,7 @@
 
     // ==========================================
     // CORTE ESPACIAL DE LÍNEAS TOPOGRÁFICAS
-    // Extrae curvas de nivel (cada 20m) en un radio de 1600m alrededor del usuario
+    // Extrae curvas de nivel densas (cada 5m) en un radio de 2800m alrededor del usuario
     // ==========================================
     function sliceTopographyFromMaster(lat, lon) {
       if (!bcnTopographyData) return;
@@ -456,7 +456,7 @@
 
       const lines = bcnTopographyData;
       const sliced = [];
-      const maxDistM = 1600;
+      const maxDistM = 2800;
       const maxDistSq = maxDistM * maxDistM;
       const mPerDegLat = METERS_PER_DEG_LAT;
       const mPerDegLon = METERS_PER_DEG_LON;
@@ -510,8 +510,8 @@
       const segs = bcnMasterData.segs;
       const localSegs = [];
 
-      // Radio de corte dinámico: 1200 metros (cubre al 100% el zoom-out máximo de 1500m)
-      const maxDistM = 1200;
+      // Radio de corte dinámico: 2600 metros (cubre al 100% el zoom-out máximo de 3500m)
+      const maxDistM = 2600;
       const maxDistSq = maxDistM * maxDistM;
       const mPerDegLat = METERS_PER_DEG_LAT;
       const mPerDegLon = METERS_PER_DEG_LON;
@@ -785,8 +785,8 @@
       let targetDragRatio = 0.0;
 
       if (isPressing) {
-        // Deslizamiento: 140px de recorrido hacia abajo para control continuo
-        targetDragRatio = Math.min(1.0, currentDragY / 140.0);
+        // Deslizamiento: 160px de recorrido hacia abajo para control continuo
+        targetDragRatio = Math.min(1.0, currentDragY / 160.0);
         targetMeters = VIEW_METERS_PEEK + targetDragRatio * (VIEW_METERS_MAX - VIEW_METERS_PEEK);
       }
 
@@ -801,13 +801,27 @@
       // 1.5. CAPA 0: LÍNEAS TOPOGRÁFICAS (Gris perla tenue de fondo, detrás de las calles)
       if (activeTopographyLines.length > 0) {
         ctx.save();
-        ctx.strokeStyle = 'rgba(218, 224, 233, 0.35)'; // Gris perla tenue de relieve
-        ctx.lineWidth = 0.75;
+        ctx.strokeStyle = 'rgba(218, 224, 233, 0.32)'; // Gris perla tenue de relieve
+        ctx.lineWidth = 0.70;
         ctx.beginPath();
 
         for (let t = 0; t < activeTopographyLines.length; t++) {
           const sub = activeTopographyLines[t];
           if (sub.length < 4) continue;
+
+          // Descarte rápido fuera del campo de visión actual
+          let minDx = 99999, maxDx = -99999, minDy = 99999, maxDy = -99999;
+          for (let p = 0; p < sub.length; p += 2) {
+            const dx = sub[p] - uX;
+            const dy = sub[p + 1] - uY;
+            if (dx < minDx) minDx = dx;
+            if (dx > maxDx) maxDx = dx;
+            if (dy < minDy) minDy = dy;
+            if (dy > maxDy) maxDy = dy;
+          }
+          if (maxDx < -cullingRadius || minDx > cullingRadius || maxDy < -cullingRadius || minDy > cullingRadius) {
+            continue;
+          }
 
           for (let p = 0; p < sub.length; p += 2) {
             const mx = sub[p];
@@ -1048,10 +1062,12 @@
       ctx.restore();
 
       // ==========================================
-      // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (50m / 100m / 200m)
+      // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (50m / 100m / 200m / 500m)
       // ==========================================
       let scaleMeters = 50.0;
-      if (currentViewMeters > 950) {
+      if (currentViewMeters > 2000) {
+        scaleMeters = 500.0;
+      } else if (currentViewMeters > 950) {
         scaleMeters = 200.0;
       } else if (currentViewMeters > 380) {
         scaleMeters = 100.0;
