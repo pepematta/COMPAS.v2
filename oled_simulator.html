@@ -467,6 +467,30 @@
       return bcn ? normalizeDistrictName(bcn.dist) : null;
     }
 
+    const BARCELONA_DISTRICT_CENTROIDS = [
+      { key: 'ciutatvella',       name: 'CIUTAT VELLA',       lat: 41.38193, lon: 2.17917 },
+      { key: 'eixample',          name: 'EIXAMPLE',          lat: 41.39058, lon: 2.16390 },
+      { key: 'santsmontjuic',     name: 'SANTS-MONTJUÏC',     lat: 41.36889, lon: 2.14233 },
+      { key: 'lescorts',          name: 'LES CORTS',          lat: 41.38650, lon: 2.11800 },
+      { key: 'sarriasantgervasi', name: 'SARRIÀ-SANT GERVASI',lat: 41.40383, lon: 2.13008 },
+      { key: 'gracia',            name: 'GRÀCIA',             lat: 41.41000, lon: 2.15600 },
+      { key: 'hortaguinardo',     name: 'HORTA-GUINARDÓ',     lat: 41.42395, lon: 2.15655 },
+      { key: 'noubarris',         name: 'NOU BARRIS',         lat: 41.44262, lon: 2.17646 },
+      { key: 'santandreu',        name: 'SANT ANDREU',        lat: 41.43343, lon: 2.19157 },
+      { key: 'santmarti',         name: 'SANT MARTÍ',         lat: 41.40870, lon: 2.19880 }
+    ];
+
+    function splitDistrictNameToLines(name) {
+      if (!name) return [];
+      if (name.length <= 15) return [name];
+      if (name === "SARRIÀ-SANT GERVASI") return ["SARRIÀ-", "SANT GERVASI"];
+      if (name.includes("-")) {
+        const parts = name.split("-");
+        if (parts.length === 2) return [parts[0] + "-", parts[1]];
+      }
+      return [name];
+    }
+
     function splitStreetNameToLines(name) {
       if (!name) return [];
       if (name.length <= 13) {
@@ -1088,6 +1112,84 @@
           drawnNames.add(item.name);
           placedCenters.push({ x: item.mx, y: item.my });
           labelsCount++;
+        }
+        ctx.restore();
+      }
+
+      // ==========================================
+      // 3.5. ETIQUETAS DE DISTRITOS EN ZOOM OUT
+      // Aparecen fluidamente al alejarse (> 420m), con el mismo estilo gráfico cartográfico
+      // ==========================================
+      const districtOpacity = Math.min(1.0, Math.max(0, (smoothViewMeters - 420) / 220));
+      if (districtOpacity > 0.02) {
+        ctx.save();
+        ctx.globalAlpha = districtOpacity;
+        ctx.font = "600 8.5px 'IBM Plex Mono', monospace";
+        ctx.textBaseline = "middle";
+
+        const placedDistrictCenters = [];
+
+        for (let d = 0; d < BARCELONA_DISTRICT_CENTROIDS.length; d++) {
+          const distObj = BARCELONA_DISTRICT_CENTROIDS[d];
+          const m = latLonToMeters(distObj.lat, distObj.lon);
+          const dx = m.x - uX;
+          const dy = m.y - uY;
+
+          // Culling contra el radio de visión
+          if (Math.abs(dx) > cullingRadius || Math.abs(dy) > cullingRadius) continue;
+
+          const rx = dx * cosH - dy * sinH;
+          const ry = dx * sinH + dy * cosH;
+
+          const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
+          const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
+
+          // Verificar límites del viewport (evitando solapar con la barra superior de 22px y la escala inferior)
+          if (sx < 30 || sx > SCREEN_W - 30 || sy < 36 || sy > SCREEN_H - 24) continue;
+
+          // Evitar colisión con otra etiqueta de distrito
+          let collides = false;
+          for (let p = 0; p < placedDistrictCenters.length; p++) {
+            if (Math.hypot(sx - placedDistrictCenters[p].x, sy - placedDistrictCenters[p].y) < 42) {
+              collides = true;
+              break;
+            }
+          }
+          if (collides) continue;
+
+          const lines = splitDistrictNameToLines(distObj.name);
+          const badgeBorderColor = getDistrictColor(distObj.key, currentThemeKey);
+
+          if (lines.length === 1) {
+            const tw = ctx.measureText(lines[0]).width;
+            const badgeW = Math.round(tw + 10);
+            const badgeH = 15;
+            const bx = Math.round(sx - badgeW / 2);
+            const by = Math.round(sy - badgeH / 2);
+
+            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+
+            ctx.fillStyle = theme.labelText;
+            ctx.textAlign = "center";
+            ctx.fillText(lines[0], sx, sy + 0.5);
+          } else {
+            const tw1 = ctx.measureText(lines[0]).width;
+            const tw2 = ctx.measureText(lines[1]).width;
+            const maxTw = Math.max(tw1, tw2);
+            const badgeW = Math.round(maxTw + 10);
+            const badgeH = 24;
+            const bx = Math.round(sx - badgeW / 2);
+            const by = Math.round(sy - badgeH / 2);
+
+            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+
+            ctx.fillStyle = theme.labelText;
+            ctx.textAlign = "center";
+            ctx.fillText(lines[0], sx, sy - 5);
+            ctx.fillText(lines[1], sx, sy + 5);
+          }
+
+          placedDistrictCenters.push({ x: sx, y: sy });
         }
         ctx.restore();
       }
