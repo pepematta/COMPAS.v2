@@ -272,7 +272,7 @@
 
     const VIEW_METERS_NORMAL = 240.0;
     const VIEW_METERS_PEEK   = 520.0;
-    const VIEW_METERS_MAX    = 3500.0;
+    const VIEW_METERS_MAX    = 12000.0;
 
     let isPressing = false;
     let touchStartY = 0;
@@ -472,7 +472,7 @@
       { key: 'eixample',          name: 'EIXAMPLE',          lat: 41.39058, lon: 2.16390 },
       { key: 'santsmontjuic',     name: 'SANTS-MONTJUÏC',     lat: 41.36889, lon: 2.14233 },
       { key: 'lescorts',          name: 'LES CORTS',          lat: 41.38650, lon: 2.11800 },
-      { key: 'sarriasantgervasi', name: 'SARRIÀ-SANT GERVASI',lat: 41.40383, lon: 2.13008 },
+      { key: 'sarriasantgervasi', name: 'SARRIÀ-SANT GERVASI',lat: 41.40100, lon: 2.12100 },
       { key: 'gracia',            name: 'GRÀCIA',             lat: 41.41000, lon: 2.15600 },
       { key: 'hortaguinardo',     name: 'HORTA-GUINARDÓ',     lat: 41.42395, lon: 2.15655 },
       { key: 'noubarris',         name: 'NOU BARRIS',         lat: 41.44262, lon: 2.17646 },
@@ -637,8 +637,11 @@
       const segs = bcnMasterData.segs;
       const localSegs = [];
 
-      const maxDistM = 2600;
-      const maxDistSq = maxDistM * maxDistM;
+      // Radio de corte: 2400m para calles locales secundarias; 9500m para vías troncales principales (Diagonal, Meridiana, etc.)
+      const maxSecDistM = 2400;
+      const maxSecDistSq = maxSecDistM * maxSecDistM;
+      const maxArterialDistM = 9500;
+      const maxArterialDistSq = maxArterialDistM * maxArterialDistM;
       const mPerDegLat = METERS_PER_DEG_LAT;
       const mPerDegLon = METERS_PER_DEG_LON;
 
@@ -647,16 +650,18 @@
         const midLat = (s[0] + s[2]) * 0.5;
         const midLon = (s[1] + s[3]) * 0.5;
         const dy = (midLat - lat) * mPerDegLat;
-        if (Math.abs(dy) > maxDistM) continue;
         const dx = (midLon - lon) * mPerDegLon;
-        if (Math.abs(dx) > maxDistM) continue;
+        const rawName = names[s[4]] || "";
+        const name = formatStreetName(rawName);
+        const isArterial = (s[5] === 4) || isMajorArterialName(name);
 
-        if (dx * dx + dy * dy <= maxDistSq) {
+        const limitM = isArterial ? maxArterialDistM : maxSecDistM;
+        if (Math.abs(dy) > limitM || Math.abs(dx) > limitM) continue;
+
+        const limitSq = isArterial ? maxArterialDistSq : maxSecDistSq;
+        if (dx * dx + dy * dy <= limitSq) {
           const p1 = latLonToMeters(s[0], s[1]);
           const p2 = latLonToMeters(s[2], s[3]);
-          const rawName = names[s[4]] || "";
-          const name = formatStreetName(rawName);
-          const isArterial = (s[5] === 4) || isMajorArterialName(name);
           const distKey = getBarcelonaDistrictKey(midLat, midLon);
 
           localSegs.push({
@@ -906,7 +911,7 @@
       if (activeTopographyLines.length > 0) {
         ctx.save();
         ctx.strokeStyle = theme.topoLine;
-        ctx.lineWidth = 0.75;
+        ctx.lineWidth = (smoothViewMeters > 1500) ? 1.1 : 0.75;
         ctx.beginPath();
 
         for (let t = 0; t < activeTopographyLines.length; t++) {
@@ -1017,24 +1022,29 @@
       }
 
       // Dibujar calles secundarias primero (trazo fino 1.1px, color de su distrito)
-      ctx.lineWidth = 1.1;
-      for (const key in districtBatches) {
-        const batch = districtBatches[key];
-        if (batch.sec.length === 0) continue;
-        ctx.save();
-        ctx.strokeStyle = batch.color;
-        if (batch.opacity < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, batch.opacity));
-        ctx.beginPath();
-        for (let j = 0; j < batch.sec.length; j += 4) {
-          ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
-          ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
+      // A lejana distancia (> 700m), las secundarias se desvanecen gradualmente para que destaquen las principales
+      const secStreetOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 700) / 600));
+      if (secStreetOpacity > 0.02) {
+        ctx.lineWidth = 1.1;
+        for (const key in districtBatches) {
+          const batch = districtBatches[key];
+          if (batch.sec.length === 0) continue;
+          ctx.save();
+          ctx.strokeStyle = batch.color;
+          const effAlpha = ((typeof batch.opacity === 'number') ? batch.opacity : 1.0) * secStreetOpacity;
+          ctx.globalAlpha = Math.max(0.15, Math.min(1.0, effAlpha));
+          ctx.beginPath();
+          for (let j = 0; j < batch.sec.length; j += 4) {
+            ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
+            ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
+          }
+          ctx.stroke();
+          ctx.restore();
         }
-        ctx.stroke();
-        ctx.restore();
       }
 
-      // Dibujar vías principales encima (trazo más grueso 2.4px, color de su distrito)
-      ctx.lineWidth = 2.4;
+      // Dibujar vías principales encima (trazo más grueso, color de su distrito)
+      ctx.lineWidth = (smoothViewMeters > 3000) ? 1.8 : 2.4;
       for (const key in districtBatches) {
         const batch = districtBatches[key];
         if (batch.pri.length === 0) continue;
@@ -1124,72 +1134,79 @@
       if (districtOpacity > 0.02) {
         ctx.save();
         ctx.globalAlpha = districtOpacity;
-        ctx.font = "600 8.5px 'IBM Plex Mono', monospace";
+        ctx.font = "600 8px 'IBM Plex Mono', monospace";
         ctx.textBaseline = "middle";
 
-        const placedDistrictCenters = [];
-
-        for (let d = 0; d < BARCELONA_DISTRICT_CENTROIDS.length; d++) {
-          const distObj = BARCELONA_DISTRICT_CENTROIDS[d];
-          const m = latLonToMeters(distObj.lat, distObj.lon);
+        // Ordenar distritos por cercanía al usuario para priorizar la etiqueta local
+        const sortedDistricts = BARCELONA_DISTRICT_CENTROIDS.map(d => {
+          const m = latLonToMeters(d.lat, d.lon);
           const dx = m.x - uX;
           const dy = m.y - uY;
+          return { ...d, dx, dy, d2: dx * dx + dy * dy };
+        }).sort((a, b) => a.d2 - b.d2);
 
-          // Culling contra el radio de visión
-          if (Math.abs(dx) > cullingRadius || Math.abs(dy) > cullingRadius) continue;
+        const placedDistrictBoxes = [];
 
-          const rx = dx * cosH - dy * sinH;
-          const ry = dx * sinH + dy * cosH;
+        for (let d = 0; d < sortedDistricts.length; d++) {
+          const distObj = sortedDistricts[d];
+
+          const rx = distObj.dx * cosH - distObj.dy * sinH;
+          const ry = distObj.dx * sinH + distObj.dy * cosH;
 
           const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
           const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
 
-          // Verificar límites del viewport (evitando solapar con la barra superior de 22px y la escala inferior)
-          if (sx < 30 || sx > SCREEN_W - 30 || sy < 36 || sy > SCREEN_H - 24) continue;
+          const lines = splitDistrictNameToLines(distObj.name);
+          const badgeBorderColor = getDistrictColor(distObj.key, currentThemeKey);
 
-          // Evitar colisión con otra etiqueta de distrito
+          let badgeW = 0;
+          let badgeH = 0;
+
+          if (lines.length === 1) {
+            const tw = ctx.measureText(lines[0]).width;
+            badgeW = Math.round(tw + 8);
+            badgeH = 13;
+          } else {
+            const tw1 = ctx.measureText(lines[0]).width;
+            const tw2 = ctx.measureText(lines[1]).width;
+            const maxTw = Math.max(tw1, tw2);
+            badgeW = Math.round(maxTw + 8);
+            badgeH = 20;
+          }
+
+          const bx = Math.round(sx - badgeW / 2);
+          const by = Math.round(sy - badgeH / 2);
+
+          // Verificar límites del viewport (evitando solapar con la barra superior de 22px y la escala inferior)
+          if (bx < 2 || bx + badgeW > SCREEN_W - 2 || by < 24 || by + badgeH > SCREEN_H - 10) {
+            continue;
+          }
+
+          // Evitar colisión entre etiquetas de distritos (AABB exacto)
           let collides = false;
-          for (let p = 0; p < placedDistrictCenters.length; p++) {
-            if (Math.hypot(sx - placedDistrictCenters[p].x, sy - placedDistrictCenters[p].y) < 42) {
+          for (let p = 0; p < placedDistrictBoxes.length; p++) {
+            const b = placedDistrictBoxes[p];
+            if (!(bx + badgeW < b.bx || bx > b.bx + b.badgeW || by + badgeH < b.by || by > b.by + b.badgeH)) {
               collides = true;
               break;
             }
           }
           if (collides) continue;
 
-          const lines = splitDistrictNameToLines(distObj.name);
-          const badgeBorderColor = getDistrictColor(distObj.key, currentThemeKey);
+          // Dibujar insignia (badge)
+          drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+
+          ctx.fillStyle = theme.labelText;
+          ctx.textAlign = "center";
 
           if (lines.length === 1) {
-            const tw = ctx.measureText(lines[0]).width;
-            const badgeW = Math.round(tw + 10);
-            const badgeH = 15;
-            const bx = Math.round(sx - badgeW / 2);
-            const by = Math.round(sy - badgeH / 2);
-
-            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
-
-            ctx.fillStyle = theme.labelText;
-            ctx.textAlign = "center";
             ctx.fillText(lines[0], sx, sy + 0.5);
           } else {
-            const tw1 = ctx.measureText(lines[0]).width;
-            const tw2 = ctx.measureText(lines[1]).width;
-            const maxTw = Math.max(tw1, tw2);
-            const badgeW = Math.round(maxTw + 10);
-            const badgeH = 24;
-            const bx = Math.round(sx - badgeW / 2);
-            const by = Math.round(sy - badgeH / 2);
-
-            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
-
-            ctx.fillStyle = theme.labelText;
-            ctx.textAlign = "center";
-            ctx.fillText(lines[0], sx, sy - 5);
-            ctx.fillText(lines[1], sx, sy + 5);
+            ctx.fillText(lines[0], sx, sy - 4.5);
+            ctx.fillText(lines[1], sx, sy + 4.5);
           }
 
-          placedDistrictCenters.push({ x: sx, y: sy });
+          placedDistrictBoxes.push({ bx, by, badgeW, badgeH });
         }
         ctx.restore();
       }
@@ -1308,7 +1325,9 @@
 
       // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (con tabular-nums)
       let scaleMeters = 50.0;
-      if (currentViewMeters > 2000) {
+      if (currentViewMeters > 5000) {
+        scaleMeters = 2000.0;
+      } else if (currentViewMeters > 2000) {
         scaleMeters = 500.0;
       } else if (currentViewMeters > 950) {
         scaleMeters = 200.0;
@@ -1331,7 +1350,8 @@
       ctx.fillStyle = theme.uiText;
       ctx.font = "500 8px 'IBM Plex Mono', monospace";
       ctx.textAlign = "left";
-      ctx.fillText(`${Math.round(scaleMeters)}m`, 12 + scaleBarPx + 5, scaleY + 3);
+      const scaleLabel = scaleMeters >= 1000 ? `${Math.round(scaleMeters / 1000)}km` : `${Math.round(scaleMeters)}m`;
+      ctx.fillText(scaleLabel, 12 + scaleBarPx + 5, scaleY + 3);
 
       // 8. INDICADOR VISUAL DEL SLIDER (Control vertical de zoom)
       const sliderOpacity = Math.min(1.0, Math.max(0, (smoothViewMeters - VIEW_METERS_NORMAL) / 80.0));
