@@ -1071,14 +1071,14 @@
           const mx = (sx1 + sx2) / 2;
           const my = (sy1 + sy2) / 2;
           if (mx >= 35 && mx <= SCREEN_W - 35 && my >= 36 && my <= SCREEN_H - 24) {
-            if (isMajor && majorCandidates.length < 8) {
+            if (isMajor && majorCandidates.length < 24) {
               majorCandidates.push({
                 name: seg.name,
                 mx, my,
                 isMajor: true,
                 districtKey: distKey
               });
-            } else if (!isMajor && minorCandidates.length < 8) {
+            } else if (!isMajor && minorCandidates.length < 32) {
               minorCandidates.push({
                 name: seg.name,
                 mx, my,
@@ -1147,82 +1147,107 @@
 
       // ==========================================
       // C) ETIQUETAS DE CALLES FLOTANTES SEGÚN ZONA:
-      // - Zona Cercana (240m - 800m): Se muestran etiquetas de calles principales y secundarias
-      // - Zona Media (800m - 2000m): SÓLO se muestran etiquetas de calles principales
-      // - Zona Alejada (2000m - 12000m): Se ocultan todas las etiquetas de calles individuales
+      // - Zona Cercana (240m - 800m): Sin prioridad de vías principales sobre secundarias.
+      //   Ambas compiten por cercanía al usuario (centro de pantalla) para dar visibilidad local.
+      // - Zona Media (800m - 2000m): SÍ se priorizan vías principales sobre secundarias.
+      //   Las principales van primero, y las secundarias llenan los huecos libres.
+      // - Zona Alejada (2000m - 12000m): Se ocultan etiquetas individuales; entran las de distritos.
+      // - Cupo máximo: hasta 6 etiquetas simultáneas.
       // ==========================================
-      const minorLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 750) / 100));
-      const majorLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1900) / 200));
+      const streetLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1900) / 200));
 
-      if (majorLabelOpacity > 0.02 || minorLabelOpacity > 0.02) {
+      if (streetLabelOpacity > 0.02) {
         ctx.save();
         ctx.font = "500 8.5px 'IBM Plex Mono', monospace";
         ctx.textBaseline = "middle";
 
         const drawnNames = new Set();
-        const placedCenters = [];
+        const placedBoxes = [];
         let labelsCount = 0;
 
-        // Lista de candidatos priorizando vías principales
+        // Construcción de la lista de candidatos según zona:
         const candidateList = [];
-        for (let m = 0; m < majorCandidates.length; m++) {
-          candidateList.push(majorCandidates[m]);
-        }
-        if (minorLabelOpacity > 0.02) {
-          for (let m = 0; m < minorCandidates.length; m++) {
-            candidateList.push(minorCandidates[m]);
-          }
+        const isNearZone = smoothViewMeters <= 800;
+
+        if (isNearZone) {
+          // En Zona Cercana: NO se priorizan principales sobre secundarias.
+          // Se combinan ambas y se ordenan por proximidad al usuario (centro de la pantalla)
+          for (let m = 0; m < majorCandidates.length; m++) candidateList.push(majorCandidates[m]);
+          for (let m = 0; m < minorCandidates.length; m++) candidateList.push(minorCandidates[m]);
+          candidateList.sort((a, b) => {
+            const da = Math.hypot(a.mx - CENTER_X, a.my - CENTER_Y);
+            const db = Math.hypot(b.mx - CENTER_X, b.my - CENTER_Y);
+            return da - db;
+          });
+        } else {
+          // En Zona Media: SÍ se priorizan vías principales sobre secundarias.
+          // Las principales van primero (ordenadas por cercanía al centro),
+          // y luego las secundarias para completar el cupo de hasta 6 etiquetas.
+          majorCandidates.sort((a, b) => {
+            const da = Math.hypot(a.mx - CENTER_X, a.my - CENTER_Y);
+            const db = Math.hypot(b.mx - CENTER_X, b.my - CENTER_Y);
+            return da - db;
+          });
+          minorCandidates.sort((a, b) => {
+            const da = Math.hypot(a.mx - CENTER_X, a.my - CENTER_Y);
+            const db = Math.hypot(b.mx - CENTER_X, b.my - CENTER_Y);
+            return da - db;
+          });
+          for (let m = 0; m < majorCandidates.length; m++) candidateList.push(majorCandidates[m]);
+          for (let m = 0; m < minorCandidates.length; m++) candidateList.push(minorCandidates[m]);
         }
 
         for (let k = 0; k < candidateList.length; k++) {
           const item = candidateList[k];
-          if (labelsCount >= 3) break;
+          if (labelsCount >= 6) break;
           if (drawnNames.has(item.name)) continue;
-
-          // En zona media, si la etiqueta es de calle secundaria y minorLabelOpacity es 0, no mostrar
-          const labelAlpha = item.isMajor ? majorLabelOpacity : minorLabelOpacity;
-          if (labelAlpha <= 0.02) continue;
-
-          let overlap = false;
-          for (let p = 0; p < placedCenters.length; p++) {
-            if (Math.hypot(item.mx - placedCenters[p].x, item.my - placedCenters[p].y) < 38) {
-              overlap = true;
-              break;
-            }
-          }
-          if (overlap) continue;
 
           const lines = splitStreetNameToLines(item.name);
           const badgeBorderColor = getDistrictColor(item.districtKey, currentThemeKey);
 
-          ctx.save();
-          ctx.globalAlpha = labelAlpha;
-
+          let badgeW = 0;
+          let badgeH = 0;
           if (lines.length === 1) {
             const tw = ctx.measureText(lines[0]).width;
-            const badgeW = Math.round(tw + 8);
-            const badgeH = 14;
-            const bx = Math.round(item.mx - badgeW / 2);
-            const by = Math.round(item.my - badgeH / 2);
-
-            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
-
-            ctx.fillStyle = theme.labelText;
-            ctx.textAlign = "center";
-            ctx.fillText(lines[0], item.mx, item.my + 0.5);
+            badgeW = Math.round(tw + 8);
+            badgeH = 14;
           } else {
             const tw1 = ctx.measureText(lines[0]).width;
             const tw2 = ctx.measureText(lines[1]).width;
             const maxTw = Math.max(tw1, tw2);
-            const badgeW = Math.round(maxTw + 8);
-            const badgeH = 23;
-            const bx = Math.round(item.mx - badgeW / 2);
-            const by = Math.round(item.my - badgeH / 2);
+            badgeW = Math.round(maxTw + 8);
+            badgeH = 23;
+          }
 
-            drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+          const bx = Math.round(item.mx - badgeW / 2);
+          const by = Math.round(item.my - badgeH / 2);
 
-            ctx.fillStyle = theme.labelText;
-            ctx.textAlign = "center";
+          // Verificar límites del viewport (evitando solapar barra superior y escala inferior)
+          if (bx < 4 || bx + badgeW > SCREEN_W - 4 || by < 24 || by + badgeH > SCREEN_H - 12) {
+            continue;
+          }
+
+          // Anti-colisión espacial AABB (con 3px de margen de seguridad entre insignias)
+          let collides = false;
+          for (let p = 0; p < placedBoxes.length; p++) {
+            const b = placedBoxes[p];
+            if (!(bx + badgeW + 3 < b.bx || bx > b.bx + b.badgeW + 3 || by + badgeH + 3 < b.by || by > b.by + b.badgeH + 3)) {
+              collides = true;
+              break;
+            }
+          }
+          if (collides) continue;
+
+          ctx.save();
+          ctx.globalAlpha = streetLabelOpacity;
+
+          drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+
+          ctx.fillStyle = theme.labelText;
+          ctx.textAlign = "center";
+          if (lines.length === 1) {
+            ctx.fillText(lines[0], item.mx, item.my + 0.5);
+          } else {
             ctx.fillText(lines[0], item.mx, item.my - 5);
             ctx.fillText(lines[1], item.mx, item.my + 5);
           }
@@ -1230,7 +1255,7 @@
           ctx.restore();
 
           drawnNames.add(item.name);
-          placedCenters.push({ x: item.mx, y: item.my });
+          placedBoxes.push({ bx, by, badgeW, badgeH });
           labelsCount++;
         }
         ctx.restore();
