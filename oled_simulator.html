@@ -578,48 +578,64 @@
       return (lat >= 41.30 && lat <= 41.48 && lon >= 2.05 && lon <= 2.25);
     }
 
+    const MAJOR_20M_RANGES = [
+      128,270, 389,456, 533,566, 637,657, 722,738, 793,814, 895,914, 973,995,
+      1063,1090, 1149,1164, 1210,1224, 1269,1280, 1329,1346, 1397,1407, 1444,1455,
+      1476,1479, 1493,1501, 1532,1546, 1581,1591, 1622,1631, 1662,1670, 1694,1698,
+      1714,1719, 1737,1741, 1752,1752, 1756,1756
+    ];
+
+    function isMajorContourLine(idx) {
+      for (let r = 0; r < MAJOR_20M_RANGES.length; r += 2) {
+        if (idx >= MAJOR_20M_RANGES[r] && idx <= MAJOR_20M_RANGES[r + 1]) return true;
+      }
+      return false;
+    }
+
+    // ==========================================
+    // PROCESAMIENTO VECTORIAL DE LÍNEAS TOPOGRÁFICAS
+    // Convierte todo el relieve de Barcelona a coordenadas métricas relativas al origen
+    // Sin recortar en círculo: abarca toda la ciudad, Collserola y Montjuïc sin límites artificiales
+    // ==========================================
     function sliceTopographyFromMaster(lat, lon) {
       if (!bcnTopographyData || !originInitialized) return;
 
       const lines = bcnTopographyData;
-      const sliced = [];
-      const maxDistM = 2800;
-      const maxDistSq = maxDistM * maxDistM;
+      const processed = [];
       const mPerDegLat = METERS_PER_DEG_LAT;
       const mPerDegLon = METERS_PER_DEG_LON;
 
       for (let i = 0; i < lines.length; i++) {
         const poly = lines[i];
-        let currentSubline = null;
+        if (!poly || poly.length < 2) continue;
 
-        for (let j = 0; j < poly.length; j++) {
+        const count = poly.length;
+        const pts = new Int32Array(count * 2);
+        let minX = 999999, maxX = -999999, minY = 999999, maxY = -999999;
+
+        for (let j = 0; j < count; j++) {
           const pt = poly[j];
-          const dy = (pt[0] - lat) * mPerDegLat;
-          const dx = (pt[1] - lon) * mPerDegLon;
-          const inside = (Math.abs(dy) <= maxDistM && Math.abs(dx) <= maxDistM && (dx * dx + dy * dy <= maxDistSq));
+          const x = Math.round((pt[1] - MAP_ORIGIN_LON) * mPerDegLon);
+          const y = Math.round((pt[0] - MAP_ORIGIN_LAT) * mPerDegLat);
+          pts[j * 2] = x;
+          pts[j * 2 + 1] = y;
 
-          if (inside) {
-            const m = latLonToMeters(pt[0], pt[1]);
-            if (!currentSubline) {
-              currentSubline = [];
-              if (j > 0) {
-                const prevM = latLonToMeters(poly[j - 1][0], poly[j - 1][1]);
-                currentSubline.push(Math.round(prevM.x), Math.round(prevM.y));
-              }
-              sliced.push(currentSubline);
-            }
-            currentSubline.push(Math.round(m.x), Math.round(m.y));
-          } else {
-            if (currentSubline) {
-              const exitM = latLonToMeters(pt[0], pt[1]);
-              currentSubline.push(Math.round(exitM.x), Math.round(exitM.y));
-              currentSubline = null;
-            }
-          }
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
         }
+
+        processed.push({
+          pts,
+          count,
+          minX, maxX, minY, maxY,
+          isMajor: isMajorContourLine(i),
+          id: i
+        });
       }
 
-      activeTopographyLines = sliced;
+      activeTopographyLines = processed;
       lastTopoSlicedLat = lat;
       lastTopoSlicedLon = lon;
     }
@@ -840,6 +856,7 @@
           vMapStatus.textContent = "recargando barcelona...";
           bcnMasterData = null;
           bcnTopographyData = null;
+          activeTopographyLines = [];
           await loadBarcelonaMasterIfAvailable(lat, lon);
         } else {
           vMapStatus.textContent = "recargando mapa amplio...";
@@ -907,33 +924,52 @@
       const currentPixelsPerMeter = SCREEN_W / currentViewMeters;
       const cullingRadius = (currentViewMeters / 2.0) * 1.45;
 
-      // 1.5. CAPA 0: LÍNEAS TOPOGRÁFICAS (Curvas de nivel en fondo, detrás de las calles)
+      // 1.5. CAPA 0: LÍNEAS TOPOGRÁFICAS (Curvas de nivel en fondo, adaptadas dinámicamente según nivel de zoom)
       if (activeTopographyLines.length > 0) {
         ctx.save();
         ctx.strokeStyle = theme.topoLine;
-        ctx.lineWidth = (smoothViewMeters > 1500) ? 1.1 : 0.75;
+        ctx.lineWidth = (smoothViewMeters > 2000) ? 1.1 : (smoothViewMeters > 700 ? 0.9 : 0.75);
         ctx.beginPath();
 
-        for (let t = 0; t < activeTopographyLines.length; t++) {
-          const sub = activeTopographyLines[t];
-          if (sub.length < 4) continue;
+        // Nivel de detalle (LOD) dinámico para curvas de nivel:
+        // - Cercana (<= 600m): Todas las curvas (intervalo 5m denso, paso 1)
+        // - Media (600m - 1800m): Curvas maestras 20m + intermedias alternadas (paso 1)
+        // - Alejada (1800m - 5000m): SÓLO curvas maestras de 20m (paso 2)
+        // - Gran Zoom Alejado (> 5000m): Curvas maestras de 20m con paso 3
+        const isFarZoom = smoothViewMeters > 5000;
+        const isMidZoom = smoothViewMeters > 1800;
+        const isTransition = smoothViewMeters > 600;
+        const pointStep = isFarZoom ? 3 : (isMidZoom ? 2 : 1);
 
-          let minDx = 99999, maxDx = -99999, minDy = 99999, maxDy = -99999;
-          for (let p = 0; p < sub.length; p += 2) {
-            const dx = sub[p] - uX;
-            const dy = sub[p + 1] - uY;
-            if (dx < minDx) minDx = dx;
-            if (dx > maxDx) maxDx = dx;
-            if (dy < minDy) minDy = dy;
-            if (dy > maxDy) maxDy = dy;
+        for (let t = 0; t < activeTopographyLines.length; t++) {
+          const line = activeTopographyLines[t];
+
+          // Filtrar según zoom LOD
+          if (isFarZoom) {
+            if (!line.isMajor || line.count < 6) continue;
+          } else if (isMidZoom) {
+            if (!line.isMajor) continue;
+          } else if (isTransition) {
+            if (!line.isMajor && (line.id % 2 !== 0)) continue;
           }
-          if (maxDx < -cullingRadius || minDx > cullingRadius || maxDy < -cullingRadius || minDy > cullingRadius) {
+
+          // Descarte rápido fuera del campo de visión (Culling O(1) con bounding box)
+          const dxMin = line.minX - uX;
+          const dxMax = line.maxX - uX;
+          const dyMin = line.minY - uY;
+          const dyMax = line.maxY - uY;
+
+          if (dxMax < -cullingRadius || dxMin > cullingRadius ||
+              dyMax < -cullingRadius || dyMin > cullingRadius) {
             continue;
           }
 
-          for (let p = 0; p < sub.length; p += 2) {
-            const mx = sub[p];
-            const my = sub[p + 1];
+          const pts = line.pts;
+          const count = line.count;
+
+          for (let p = 0; p < count; p += pointStep) {
+            const mx = pts[p * 2];
+            const my = pts[p * 2 + 1];
             const dx = mx - uX;
             const dy = my - uY;
 
@@ -948,6 +984,20 @@
             } else {
               ctx.lineTo(sx, sy);
             }
+          }
+
+          // Asegurar conexión del punto final si el paso no cayó en el último índice
+          if ((count - 1) % pointStep !== 0) {
+            const lastIdx = (count - 1) * 2;
+            const mx = pts[lastIdx];
+            const my = pts[lastIdx + 1];
+            const dx = mx - uX;
+            const dy = my - uY;
+            const rx = dx * cosH - dy * sinH;
+            const ry = dx * sinH + dy * cosH;
+            const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
+            const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
+            ctx.lineTo(sx, sy);
           }
         }
         ctx.stroke();
