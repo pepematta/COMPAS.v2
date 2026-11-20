@@ -271,7 +271,7 @@
     const CENTER_Y = 128;
 
     const VIEW_METERS_NORMAL = 240.0;
-    const VIEW_METERS_PEEK   = 520.0;
+    const VIEW_METERS_PEEK   = 480.0;
     const VIEW_METERS_MAX    = 12000.0;
 
     let isPressing = false;
@@ -653,11 +653,9 @@
       const segs = bcnMasterData.segs;
       const localSegs = [];
 
-      // Radio de corte: 2400m para calles locales secundarias; 9500m para vías troncales principales (Diagonal, Meridiana, etc.)
-      const maxSecDistM = 2400;
-      const maxSecDistSq = maxSecDistM * maxSecDistM;
-      const maxArterialDistM = 9500;
-      const maxArterialDistSq = maxArterialDistM * maxArterialDistM;
+      // Radio de corte amplio para cubrir toda Barcelona en Zona Alejada (hasta 12000m de visión)
+      const maxDistM = 16000;
+      const maxDistSq = maxDistM * maxDistM;
       const mPerDegLat = METERS_PER_DEG_LAT;
       const mPerDegLon = METERS_PER_DEG_LON;
 
@@ -671,11 +669,9 @@
         const name = formatStreetName(rawName);
         const isArterial = (s[5] === 4) || isMajorArterialName(name);
 
-        const limitM = isArterial ? maxArterialDistM : maxSecDistM;
-        if (Math.abs(dy) > limitM || Math.abs(dx) > limitM) continue;
+        if (Math.abs(dy) > maxDistM || Math.abs(dx) > maxDistM) continue;
 
-        const limitSq = isArterial ? maxArterialDistSq : maxSecDistSq;
-        if (dx * dx + dy * dy <= limitSq) {
+        if (dx * dx + dy * dy <= maxDistSq) {
           const p1 = latLonToMeters(s[0], s[1]);
           const p2 = latLonToMeters(s[2], s[3]);
           const distKey = getBarcelonaDistrictKey(midLat, midLon);
@@ -913,7 +909,17 @@
 
       if (isPressing) {
         targetDragRatio = Math.min(1.0, currentDragY / 160.0);
-        targetMeters = VIEW_METERS_PEEK + targetDragRatio * (VIEW_METERS_MAX - VIEW_METERS_PEEK);
+        // Mapeo progresivo natural para recorrer cómodamente las 3 zonas de zoom:
+        // - Zona Cercana (240m - 800m) en el primer 35% del recorrido
+        // - Zona Media (800m - 2000m) entre el 35% y 65% del recorrido
+        // - Zona Alejada (2000m - 12000m) en el tercio final (65% al 100%)
+        if (targetDragRatio <= 0.35) {
+          targetMeters = VIEW_METERS_PEEK + (targetDragRatio / 0.35) * (800.0 - VIEW_METERS_PEEK);
+        } else if (targetDragRatio <= 0.65) {
+          targetMeters = 800.0 + ((targetDragRatio - 0.35) / 0.30) * (2000.0 - 800.0);
+        } else {
+          targetMeters = 2000.0 + ((targetDragRatio - 0.65) / 0.35) * (VIEW_METERS_MAX - 2000.0);
+        }
       }
 
       smoothViewMeters += (targetMeters - smoothViewMeters) * 0.16;
@@ -928,17 +934,17 @@
       if (activeTopographyLines.length > 0) {
         ctx.save();
         ctx.strokeStyle = theme.topoLine;
-        ctx.lineWidth = (smoothViewMeters > 2000) ? 1.1 : (smoothViewMeters > 700 ? 0.9 : 0.75);
+        ctx.lineWidth = (smoothViewMeters > 2000) ? 1.0 : (smoothViewMeters > 800 ? 0.85 : 0.75);
         ctx.beginPath();
 
-        // Nivel de detalle (LOD) dinámico para curvas de nivel:
-        // - Cercana (<= 600m): Todas las curvas (intervalo 5m denso, paso 1)
-        // - Media (600m - 1800m): Curvas maestras 20m + intermedias alternadas (paso 1)
-        // - Alejada (1800m - 5000m): SÓLO curvas maestras de 20m (paso 2)
-        // - Gran Zoom Alejado (> 5000m): Curvas maestras de 20m con paso 3
-        const isFarZoom = smoothViewMeters > 5000;
-        const isMidZoom = smoothViewMeters > 1800;
-        const isTransition = smoothViewMeters > 600;
+        // Nivel de detalle (LOD) dinámico para curvas de nivel armonizado con las 3 zonas:
+        // - Zona Cercana (<= 800m): Todas las curvas (intervalo 5m denso, paso 1)
+        // - Zona Media (800m - 2000m): Curvas maestras 20m + intermedias alternadas (paso 1)
+        // - Zona Alejada (2000m - 6000m): SÓLO curvas maestras de 20m (paso 2)
+        // - Gran Zoom Alejado (> 6000m): Curvas maestras de 20m con paso 3
+        const isFarZoom = smoothViewMeters > 6000;
+        const isMidZoom = smoothViewMeters > 2000;
+        const isTransition = smoothViewMeters > 800;
         const pointStep = isFarZoom ? 3 : (isMidZoom ? 2 : 1);
 
         for (let t = 0; t < activeTopographyLines.length; t++) {
@@ -1037,6 +1043,9 @@
         const sx2 = Math.round(CENTER_X + rx2 * currentPixelsPerMeter);
         const sy2 = Math.round(CENTER_Y - ry2 * currentPixelsPerMeter);
 
+        // Descartar segmentos que colapsan a longitud 0 en este nivel de zoom
+        if (sx1 === sx2 && sy1 === sy2) continue;
+
         const isMajor = !!seg.isMajor;
         const distKey = seg.districtKey || 'fallback';
         const op = (typeof seg.opacity === 'number') ? seg.opacity : 1.0;
@@ -1083,43 +1092,50 @@
 
       // =========================================================================
       // ARQUITECTURA DE 3 CAPAS SEMÁNTICAS POR NIVEL DE ZOOM:
-      // 1. ZONA CERCANA  (<= 500m): Todas las calles (pequeñas y principales) + todas sus etiquetas
-      // 2. ZONA MEDIA    (500m - 1400m): Todas las calles (incluyendo pequeñas) + SÓLO etiquetas principales
-      // 3. ZONA ALEJADA  (> 1400m): Se ocultan calles pequeñas + SÓLO etiquetas de distritos
+      // 1. ZONA CERCANA  (240m - 800m): Todas las calles (100%) + etiquetas de calles principales y secundarias
+      // 2. ZONA MEDIA    (800m - 2000m): Todas las calles (100%) + SÓLO etiquetas de vías principales
+      // 3. ZONA ALEJADA  (2000m - 12000m): Todas las calles al 100% (con diferenciación de grosor) + SÓLO etiquetas de distritos
       // =========================================================================
 
       // A) VISIBILIDAD DE CALLES SECUNDARIAS / PEQUEÑAS:
-      // Visibles al 100% en Zona Cercana y Zona Media (< 1300m).
-      // Se ocultan suavemente al entrar en Zona Alejada (> 1300m - 1600m).
-      const secStreetOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1300) / 300));
-      if (secStreetOpacity > 0.02) {
-        ctx.lineWidth = 1.1;
-        for (const key in districtBatches) {
-          const batch = districtBatches[key];
-          if (batch.sec.length === 0) continue;
-          ctx.save();
-          ctx.strokeStyle = batch.color;
-          const effAlpha = ((typeof batch.opacity === 'number') ? batch.opacity : 1.0) * secStreetOpacity;
-          ctx.globalAlpha = Math.max(0.15, Math.min(1.0, effAlpha));
-          ctx.beginPath();
-          for (let j = 0; j < batch.sec.length; j += 4) {
-            ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
-            ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
-          }
-          ctx.stroke();
-          ctx.restore();
+      // Visibles al 100% en todas las zonas (cercana, media y alejada).
+      // Grosor con jerarquía: 1.1px en zonas cercana y media; trazo fino suave (0.65px - 0.85px) en zona alejada (> 2000m).
+      const secLineWidth = (smoothViewMeters <= 2000)
+        ? 1.1
+        : Math.max(0.65, 1.1 - ((smoothViewMeters - 2000) / 10000) * 0.45);
+
+      ctx.lineWidth = secLineWidth;
+      for (const key in districtBatches) {
+        const batch = districtBatches[key];
+        if (batch.sec.length === 0) continue;
+        ctx.save();
+        ctx.strokeStyle = batch.color;
+        const effAlpha = (typeof batch.opacity === 'number') ? batch.opacity : 1.0;
+        if (effAlpha < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, effAlpha));
+        ctx.beginPath();
+        for (let j = 0; j < batch.sec.length; j += 4) {
+          ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
+          ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
         }
+        ctx.stroke();
+        ctx.restore();
       }
 
       // B) VISIBILIDAD DE VÍAS PRINCIPALES:
-      // Visibles en las 3 zonas (trazo más grueso 2.4px en zonas cercana y media; 1.8px adaptativo en zona alejada)
-      ctx.lineWidth = (smoothViewMeters > 1600) ? 1.8 : 2.4;
+      // Visibles al 100% en todas las zonas.
+      // Grosor destacado y grueso: 2.4px en zonas cercana y media; 1.8px - 1.6px en zona alejada (> 2000m).
+      const priLineWidth = (smoothViewMeters <= 2000)
+        ? 2.4
+        : Math.max(1.6, 2.4 - ((smoothViewMeters - 2000) / 10000) * 0.8);
+
+      ctx.lineWidth = priLineWidth;
       for (const key in districtBatches) {
         const batch = districtBatches[key];
         if (batch.pri.length === 0) continue;
         ctx.save();
         ctx.strokeStyle = batch.color;
-        if (batch.opacity < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, batch.opacity));
+        const effAlpha = (typeof batch.opacity === 'number') ? batch.opacity : 1.0;
+        if (effAlpha < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, effAlpha));
         ctx.beginPath();
         for (let j = 0; j < batch.pri.length; j += 4) {
           ctx.moveTo(batch.pri[j], batch.pri[j + 1]);
@@ -1131,12 +1147,12 @@
 
       // ==========================================
       // C) ETIQUETAS DE CALLES FLOTANTES SEGÚN ZONA:
-      // - Zona Cercana (< 500m): Se muestran etiquetas de calles principales y secundarias
-      // - Zona Media (500m - 1400m): SÓLO se muestran etiquetas de calles principales
-      // - Zona Alejada (> 1400m): Se ocultan todas las etiquetas de calles
+      // - Zona Cercana (240m - 800m): Se muestran etiquetas de calles principales y secundarias
+      // - Zona Media (800m - 2000m): SÓLO se muestran etiquetas de calles principales
+      // - Zona Alejada (2000m - 12000m): Se ocultan todas las etiquetas de calles individuales
       // ==========================================
-      const minorLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 440) / 100));
-      const majorLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1350) / 250));
+      const minorLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 750) / 100));
+      const majorLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1900) / 200));
 
       if (majorLabelOpacity > 0.02 || minorLabelOpacity > 0.02) {
         ctx.save();
@@ -1222,10 +1238,10 @@
 
       // ==========================================
       // D) ETIQUETAS DE DISTRITOS EN ZONA ALEJADA
-      // Aparecen exclusivamente al entrar en Zona Alejada (> 1400m), con estilo cartográfico
+      // Aparecen exclusivamente al entrar en Zona Alejada (> 2000m), con estilo cartográfico
       // Ocultas en Zona Cercana y Zona Media
       // ==========================================
-      const districtOpacity = Math.min(1.0, Math.max(0, (smoothViewMeters - 1400) / 250));
+      const districtOpacity = Math.min(1.0, Math.max(0, (smoothViewMeters - 1950) / 200));
       if (districtOpacity > 0.02) {
         ctx.save();
         ctx.globalAlpha = districtOpacity;
@@ -1420,11 +1436,13 @@
 
       // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (con tabular-nums)
       let scaleMeters = 50.0;
-      if (currentViewMeters > 5000) {
+      if (currentViewMeters > 7000) {
         scaleMeters = 2000.0;
-      } else if (currentViewMeters > 2000) {
+      } else if (currentViewMeters > 3200) {
+        scaleMeters = 1000.0;
+      } else if (currentViewMeters > 1500) {
         scaleMeters = 500.0;
-      } else if (currentViewMeters > 950) {
+      } else if (currentViewMeters > 750) {
         scaleMeters = 200.0;
       } else if (currentViewMeters > 380) {
         scaleMeters = 100.0;
