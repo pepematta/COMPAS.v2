@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COMPAS - Enlace GPS & Destino BLE</title>
+  
+  <!-- Leaflet Map CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --border: #334155;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 1rem;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    header {
+      text-align: center;
+      padding: 0.5rem 0 0.25rem;
+    }
+
+    header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: var(--accent);
+    }
+
+    header p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.15rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      background: #334155;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+    }
+
+    .status-badge.connected {
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--success);
+    }
+
+    .status-badge .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 0.75rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #0f172a;
+      background-color: var(--accent);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color 0.2s, transform 0.1s;
+    }
+
+    .btn:hover:not(:disabled) {
+      background-color: var(--accent-hover);
+      color: #fff;
+    }
+
+    .btn:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background-color: var(--border);
+    }
+
+    .btn-sm {
+      padding: 0.4rem 0.75rem;
+      font-size: 0.8rem;
+      width: auto;
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.2);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+    }
+
+    .btn-danger:hover {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    .data-item {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem;
+    }
+
+    .data-item .label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .data-item .value {
+      font-size: 1.05rem;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      margin-top: 0.2rem;
+    }
+
+    #mapContainer {
+      height: 240px;
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      margin-top: 0.6rem;
+      z-index: 1;
+    }
+
+    .sim-controls {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.4rem;
+      max-width: 200px;
+      margin: 0.75rem auto 0;
+    }
+
+    .sim-btn {
+      padding: 0.65rem;
+      font-size: 1rem;
+      background: var(--border);
+      color: var(--text);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .sim-btn:hover {
+      background: var(--accent);
+      color: #000;
+    }
+
+    .target-banner {
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      margin-top: 0.6rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: auto;
+      padding-top: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>COMPAS</h1>
+      <p>Navegación Intermedia • Brújula + Mapa</p>
+    </header>
+
+    <!-- Conexión BLE -->
+    <div class="card">
+      <div id="bleStatus" class="status-badge">
+        <span class="dot"></span>
+        <span id="bleStatusText">Desconectado de COMPAS-NAV</span>
+      </div>
+      <button id="btnConnect" class="btn">Conectar vía Bluetooth</button>
+      <button id="btnDisconnect" class="btn btn-secondary" style="display: none; width: 100%; margin-top: 0.5rem;">Desconectar</button>
+    </div>
+
+    <!-- Mapa Interactivo & Selección de Destino -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="font-size: 0.95rem;">🎯 Fijar Destino (Toca el mapa)</h3>
+        <button id="btnClearTarget" class="btn btn-sm btn-danger" style="display: none;" onclick="clearTarget()">✕ Quitar</button>
+      </div>
+      
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">
+        Toca cualquier punto del mapa para fijar tu objetivo. El Barduino te mostrará la flecha y distancia.
+      </p>
+
+      <div id="mapContainer"></div>
+
+      <!-- Banner de información de destino -->
+      <div id="targetBanner" class="target-banner" style="display: none;">
+        <div>
+          <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">Distancia en línea recta</div>
+          <div id="lblTargetDist" style="font-size: 1.25rem; font-weight: 700; color: var(--accent);">-- m</div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">Rumbo</div>
+          <div id="lblTargetBearing" style="font-size: 1.1rem; font-weight: 600; color: var(--text);">--°</div>
+        </div>
+      </div>
+
+      <!-- Accesos rápidos de prueba de destino -->
+      <div style="display: flex; gap: 0.4rem; margin-top: 0.6rem;">
+        <button class="btn btn-secondary btn-sm" style="flex: 1;" onclick="setRelativeTarget(0, 0.0025)">+250m Norte</button>
+        <button class="btn btn-secondary btn-sm" style="flex: 1;" onclick="setRelativeTarget(0.0025, 0)">+250m Este</button>
+        <button class="btn btn-secondary btn-sm" style="flex: 1;" onclick="setRelativeTarget(-0.0025, -0.0025)">-300m SO</button>
+      </div>
+    </div>
+
+    <!-- Telemetría GPS -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+        <h3 style="font-size: 0.95rem;">📍 Tu Ubicación</h3>
+        <label style="font-size: 0.8rem; display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+          <input type="checkbox" id="chkAutoGps" checked> Auto GPS
+        </label>
+      </div>
+      
+      <div class="grid-2">
+        <div class="data-item">
+          <div class="label">Latitud</div>
+          <div id="valLat" class="value">--.------</div>
+        </div>
+        <div class="data-item">
+          <div class="label">Longitud</div>
+          <div id="valLon" class="value">--.------</div>
+        </div>
+        <div class="data-item">
+          <div class="label">Precisión GPS</div>
+          <div id="valAcc" class="value">-- m</div>
+        </div>
+        <div class="data-item">
+          <div class="label">Paquetes BLE</div>
+          <div id="valPkts" class="value">0</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Simulador de Caminata -->
+    <div class="card">
+      <h3 style="font-size: 0.95rem; margin-bottom: 0.2rem;">🕹 Simulador de Caminata</h3>
+      <p style="font-size: 0.75rem; color: var(--text-muted);">Camina virtualmente hacia el objetivo desde tu mesa de trabajo</p>
+      
+      <div class="sim-controls">
+        <div></div>
+        <button class="sim-btn" onclick="simMove(0, 0.00015)">▲ N</button>
+        <div></div>
+        <button class="sim-btn" onclick="simMove(-0.00015, 0)">◀ O</button>
+        <button class="sim-btn" onclick="resetOrigin()" title="Volver al origen">⦿</button>
+        <button class="sim-btn" onclick="simMove(0.00015, 0)">E ▶</button>
+        <div></div>
+        <button class="sim-btn" onclick="simMove(0, -0.00015)">▼ S</button>
+        <div></div>
+      </div>
+    </div>
+
+    <!-- Descarga de Mapa Local -->
+    <div class="card">
+      <h3 style="font-size: 0.95rem; margin-bottom: 0.2rem;">🗺 Mapa de tu Ubicación Actual</h3>
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+        Comando para descargar las calles reales de donde estás ahora:
+      </p>
+      <div style="background: rgba(15, 23, 42, 0.8); padding: 0.5rem; border-radius: 6px; font-family: monospace; font-size: 0.72rem; word-break: break-all; border: 1px solid var(--border);" id="cmdGen">
+        python3 tools/generate_map.py --lat 41.3965 --lon 2.1943 --radius 800 --output COMPAS_Firmware/map_data.h
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="copyCommand()" style="margin-top: 0.5rem; width: 100%;">Copiar comando</button>
+    </div>
+
+    <footer>
+      Sistema COMPAS • BLE + Leaflet + OpenStreetMap
+    </footer>
+  </div>
+
+  <!-- Leaflet Map JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const CHAR_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+
+    let bleDevice = null;
+    let rxChar = null;
+    let packetCount = 0;
+    let watchId = null;
+
+    // Coordenadas actuales del usuario (defecto Barcelona Poblenou / Fab Lab)
+    let curLat = 41.3965;
+    let curLon = 2.1943;
+
+    // Coordenadas del objetivo/destino
+    let targetLat = null;
+    let targetLon = null;
+
+    // Elementos UI
+    const bleStatus = document.getElementById('bleStatus');
+    const bleStatusText = document.getElementById('bleStatusText');
+    const btnConnect = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+    const valLat = document.getElementById('valLat');
+    const valLon = document.getElementById('valLon');
+    const valAcc = document.getElementById('valAcc');
+    const valPkts = document.getElementById('valPkts');
+    const chkAutoGps = document.getElementById('chkAutoGps');
+    const btnClearTarget = document.getElementById('btnClearTarget');
+    const targetBanner = document.getElementById('targetBanner');
+    const lblTargetDist = document.getElementById('lblTargetDist');
+    const lblTargetBearing = document.getElementById('lblTargetBearing');
+
+    // Inicializar Mapa Leaflet
+    let lMap = null;
+    let userMarker = null;
+    let targetMarker = null;
+    let navLine = null;
+
+    function initLeafletMap() {
+      try {
+        lMap = L.map('mapContainer').setView([curLat, curLon], 16);
+
+        // Capa ESRI World Street Map (Rápida, global, 100% gratuita y sin bloqueos de User-Agent/API Key)
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+          attribution: '&copy; Esri &mdash; OpenStreetMap contributors',
+          maxZoom: 19
+        }).addTo(lMap);
+
+        // Marcador azul del usuario
+        userMarker = L.circleMarker([curLat, curLon], {
+          radius: 8,
+          fillColor: '#38bdf8',
+          color: '#ffffff',
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.9
+        }).addTo(lMap).bindPopup("Tu posición actual");
+
+        // Evento al tocar en el mapa: fijar destino
+        lMap.on('click', function(e) {
+          setTarget(e.latlng.lat, e.latlng.lng);
+        });
+
+      } catch (err) {
+        console.warn("No se pudo cargar Leaflet:", err);
+      }
+    }
+
+    function calculateDistanceAndBearing(lat1, lon1, lat2, lon2) {
+      const R = 6371000; // Radio de la Tierra en metros
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const rLat1 = lat1 * Math.PI / 180;
+      const rLat2 = lat2 * Math.PI / 180;
+
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(rLat1) * Math.cos(rLat2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      const dist = R * c;
+
+      const y = Math.sin(dLon) * Math.cos(rLat2);
+      const x = Math.cos(rLat1) * Math.sin(rLat2) - Math.sin(rLat1) * Math.cos(rLat2) * Math.cos(dLon);
+      let brng = Math.atan2(y, x) * 180 / Math.PI;
+      brng = (brng + 360) % 360;
+
+      return { distance: dist, bearing: Math.round(brng) };
+    }
+
+    function setTarget(lat, lon) {
+      targetLat = lat;
+      targetLon = lon;
+
+      // Actualizar mapa Leaflet
+      if (lMap) {
+        if (!targetMarker) {
+          const redIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            shadowSize: [41, 41]
+          });
+          targetMarker = L.marker([targetLat, targetLon], { icon: redIcon }).addTo(lMap);
+        } else {
+          targetMarker.setLatLng([targetLat, targetLon]);
+        }
+
+        if (!navLine) {
+          navLine = L.polyline([[curLat, curLon], [targetLat, targetLon]], {
+            color: '#38bdf8',
+            dashArray: '5, 8',
+            weight: 2
+          }).addTo(lMap);
+        } else {
+          navLine.setLatLngs([[curLat, curLon], [targetLat, targetLon]]);
+        }
+      }
+
+      updateTargetBanner();
+      btnClearTarget.style.display = "block";
+
+      // Transmitir inmediatamente vía BLE
+      sendCurrentState();
+    }
+
+    function setRelativeTarget(dLon, dLat) {
+      setTarget(curLat + dLat, curLon + dLon);
+    }
+
+    function clearTarget() {
+      targetLat = null;
+      targetLon = null;
+
+      if (targetMarker && lMap) {
+        lMap.removeLayer(targetMarker);
+        targetMarker = null;
+      }
+      if (navLine && lMap) {
+        lMap.removeLayer(navLine);
+        navLine = null;
+      }
+
+      targetBanner.style.display = "none";
+      btnClearTarget.style.display = "none";
+
+      // Transmitir borrado de destino vía BLE
+      sendPayload("TARGET:CLEAR\n");
+    }
+
+    function updateTargetBanner() {
+      if (targetLat !== null && targetLon !== null) {
+        const { distance, bearing } = calculateDistanceAndBearing(curLat, curLon, targetLat, targetLon);
+        targetBanner.style.display = "flex";
+        
+        if (distance < 1000) {
+          lblTargetDist.textContent = `${Math.round(distance)} m`;
+        } else {
+          lblTargetDist.textContent = `${(distance / 1000).toFixed(1)} km`;
+        }
+        lblTargetBearing.textContent = `${bearing}°`;
+      }
+    }
+
+    // Bluetooth BLE
+    async function connectBLE() {
+      // Detección de soporte de Web Bluetooth
+      if (!navigator.bluetooth) {
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        if (isIOS) {
+          alert("📱 Estás en iPhone (iOS):\n\nApple no permite Bluetooth en Safari ni Chrome de iOS.\n\nPara conectarte al Barduino desde tu iPhone, instala la app gratuita 'Bluefy - Web BLE Browser' desde el App Store y abre este enlace allí.");
+          bleStatusText.textContent = "Abre en la app 'Bluefy' (iOS)";
+        } else {
+          alert("🤖 En Android, debes abrir este enlace directamente en la app Google Chrome (no dentro del navegador integrado de WhatsApp o Instagram).");
+          bleStatusText.textContent = "Abre en la app Google Chrome";
+        }
+        return;
+      }
+
+      try {
+        bleStatusText.textContent = "Buscando 'COMPAS-NAV'...";
+        
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'COMPAS-NAV' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        bleStatusText.textContent = "Conectando al dispositivo...";
+        const server = await bleDevice.gatt.connect();
+
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        rxChar = await service.getCharacteristic(CHAR_RX_UUID);
+
+        bleStatus.classList.add('connected');
+        bleStatusText.textContent = "Conectado a COMPAS-NAV";
+        btnConnect.style.display = "none";
+        btnDisconnect.style.display = "block";
+
+        // Enviar estado inicial
+        sendCurrentState();
+
+      } catch (err) {
+        console.error(err);
+        bleStatus.classList.remove('connected');
+        bleStatusText.textContent = "Error de conexión: " + err.message;
+      }
+    }
+
+    function onDisconnected() {
+      bleStatus.classList.remove('connected');
+      bleStatusText.textContent = "Desconectado de COMPAS-NAV";
+      btnConnect.style.display = "block";
+      btnDisconnect.style.display = "none";
+      rxChar = null;
+    }
+
+    async function sendPayload(payloadStr) {
+      if (!rxChar) return;
+      try {
+        const encoder = new TextEncoder();
+        await rxChar.writeValue(encoder.encode(payloadStr));
+        packetCount++;
+        valPkts.textContent = packetCount;
+      } catch (err) {
+        console.warn("Fallo al enviar BLE:", err);
+      }
+    }
+
+    function sendCurrentState() {
+      valLat.textContent = curLat.toFixed(6);
+      valLon.textContent = curLon.toFixed(6);
+
+      // Si hay objetivo activo, enviar lat,lon,targetLat,targetLon
+      if (targetLat !== null && targetLon !== null) {
+        const payload = `${curLat.toFixed(6)},${curLon.toFixed(6)},${targetLat.toFixed(6)},${targetLon.toFixed(6)}\n`;
+        sendPayload(payload);
+      } else {
+        const payload = `${curLat.toFixed(6)},${curLon.toFixed(6)}\n`;
+        sendPayload(payload);
+      }
+    }
+
+    // Iniciar captura GPS
+    function initGPS() {
+      if (!("geolocation" in navigator)) {
+        valAcc.textContent = "Sin GPS";
+        return;
+      }
+
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+          valAcc.textContent = `±${Math.round(pos.coords.accuracy)}m`;
+          
+          // Actualizar comando sugerido con las coordenadas reales
+          const cmdElem = document.getElementById('cmdGen');
+          if (cmdElem) {
+            cmdElem.textContent = `python3 tools/generate_map.py --lat ${lat.toFixed(6)} --lon ${lon.toFixed(6)} --radius 800 --output COMPAS_Firmware/map_data.h`;
+          }
+
+          if (!chkAutoGps.checked) return;
+          curLat = lat;
+          curLon = lon;
+
+          if (userMarker) {
+            userMarker.setLatLng([curLat, curLon]);
+          }
+          if (navLine && targetMarker) {
+            navLine.setLatLngs([[curLat, curLon], [targetLat, targetLon]]);
+          }
+          updateTargetBanner();
+          sendCurrentState();
+        },
+        (err) => {
+          console.warn("Error GPS:", err);
+          valAcc.textContent = "Err GPS";
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 1000,
+          timeout: 10000
+        }
+      );
+    }
+
+    function simMove(dLon, dLat) {
+      curLat += dLat;
+      curLon += dLon;
+      chkAutoGps.checked = false;
+      valAcc.textContent = "Manual";
+
+      if (userMarker) {
+        userMarker.setLatLng([curLat, curLon]);
+      }
+      if (navLine && targetMarker) {
+        navLine.setLatLngs([[curLat, curLon], [targetLat, targetLon]]);
+      }
+      updateTargetBanner();
+      sendCurrentState();
+    }
+
+    function resetOrigin() {
+      curLat = 41.3965;
+      curLon = 2.1943;
+      chkAutoGps.checked = false;
+      valAcc.textContent = "Origen";
+
+      if (userMarker) {
+        userMarker.setLatLng([curLat, curLon]);
+        if (lMap) lMap.panTo([curLat, curLon]);
+      }
+      if (navLine && targetMarker) {
+        navLine.setLatLngs([[curLat, curLon], [targetLat, targetLon]]);
+      }
+      updateTargetBanner();
+      sendCurrentState();
+    }
+
+    function copyCommand() {
+      const text = document.getElementById('cmdGen').textContent.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        alert("Comando copiado al portapapeles. Ejecútalo en tu terminal para descargar tu mapa local.");
+      });
+    }
+
+    btnConnect.addEventListener('click', connectBLE);
+    btnDisconnect.addEventListener('click', () => {
+      if (bleDevice && bleDevice.gatt.connected) {
+        bleDevice.gatt.disconnect();
+      }
+    });
+
+    // Inicializar mapa y GPS al cargar
+    window.addEventListener('DOMContentLoaded', () => {
+      initLeafletMap();
+      initGPS();
+    });
+  </script>
+</body>
+</html>
