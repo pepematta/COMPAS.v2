@@ -421,52 +421,126 @@
     }
 
     // ==========================================
-    // RESPALDO INMEDIATO LOCAL PARA BARCELONA
-    // Garantiza 0 ms de espera y mapa 100% operativo incluso con APIs caídas
+    // BASE VECTORIAL COMPLETA DE BARCELONA (100% OFFLINE / RESILIENTE)
+    // Cubre todos los 10 distritos de Barcelona (90.000+ segmentos)
+    // Extrae dinámicamente un radio de 1200m alrededor de tu GPS exacto
     // ==========================================
-    async function loadFallbackIfAvailable(lat, lon) {
+    let bcnMasterData = null;
+    let lastSlicedLat = null;
+    let lastSlicedLon = null;
+
+    const BCN_COLOR_PALETTE = [
+      STREET_COLORS.AMBER,   // 0: Cerdà SO-NE
+      STREET_COLORS.CYAN,    // 1: Cerdà NO-SE
+      STREET_COLORS.YELLOW,  // 2: Norte-Sur
+      STREET_COLORS.GREEN,   // 3: Este-Oeste
+      STREET_COLORS.YELLOW,  // 4: Arterial (Diagonal, Gran Via, etc.)
+      STREET_COLORS.DEFAULT  // 5: Calles secundarias/grises
+    ];
+
+    function isInsideBarcelonaArea(lat, lon) {
+      return (lat >= 41.30 && lat <= 41.48 && lon >= 2.05 && lon <= 2.25);
+    }
+
+    function sliceLocalSegmentsFromMaster(lat, lon) {
+      if (!bcnMasterData || !bcnMasterData.segs) return false;
+      if (!originInitialized) {
+        MAP_ORIGIN_LAT = lat;
+        MAP_ORIGIN_LON = lon;
+        METERS_PER_DEG_LON = METERS_PER_DEG_LAT * Math.cos(MAP_ORIGIN_LAT * Math.PI / 180);
+        originInitialized = true;
+      }
+
+      const names = bcnMasterData.names;
+      const segs = bcnMasterData.segs;
+      const localSegs = [];
+
+      // Radio de corte dinámico: 1200 metros (cubre al 100% el zoom-out máximo de 1500m)
+      const maxDistM = 1200;
+      const maxDistSq = maxDistM * maxDistM;
+      const mPerDegLat = METERS_PER_DEG_LAT;
+      const mPerDegLon = METERS_PER_DEG_LON;
+
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        const midLat = (s[0] + s[2]) * 0.5;
+        const midLon = (s[1] + s[3]) * 0.5;
+        const dy = (midLat - lat) * mPerDegLat;
+        if (Math.abs(dy) > maxDistM) continue;
+        const dx = (midLon - lon) * mPerDegLon;
+        if (Math.abs(dx) > maxDistM) continue;
+
+        if (dx * dx + dy * dy <= maxDistSq) {
+          const p1 = latLonToMeters(s[0], s[1]);
+          const p2 = latLonToMeters(s[2], s[3]);
+          const rawName = names[s[4]] || "";
+          let name = "";
+          if (rawName) {
+            name = rawName.toUpperCase()
+              .replace(/^CARRER D'|^CARRER DE L'|^CARRER DE LA |^CARRER DE LES |^CARRER DELS |^CARRER DEL |^CARRER DE |^CARRER /, "C. ")
+              .replace(/^AVINGUDA DIAGONAL|^AV. DIAGONAL/, "DIAGONAL")
+              .replace(/^AVINGUDA D'|^AVINGUDA DE |^AVINGUDA /, "AV. ")
+              .replace(/^PASSEIG DE |^PASSEIG D'|^PASSEIG /, "PG. ")
+              .replace(/^RAMBLA DEL |^RAMBLA DE |^RAMBLA /, "RBLA. ")
+              .replace(/^GRAN VIA DE LES CORTS CATALANES|^GRAN VIA/, "GRAN VIA")
+              .replace(/^CALLE DE LA |^CALLE DE LAS |^CALLE DE LOS |^CALLE DEL |^CALLE DE |^CALLE D'|^CALLE /, "C. ")
+              .replace(/^AVENIDA DE |^AVENIDA /, "AV. ")
+              .replace(/^PASEO DE |^PASEO /, "PG. ")
+              .replace(/^RONDA DE |^RONDA /, "RDA. ")
+              .replace(/^PLAÇA DE |^PLAÇA DEL |^PLAÇA D'|^PLAÇA |^PLAZA DE |^PLAZA /, "PL. ")
+              .trim();
+            if (name.length > 25) name = name.substring(0, 25);
+          }
+          const colDef = BCN_COLOR_PALETTE[s[5]] || STREET_COLORS.DEFAULT;
+          localSegs.push({
+            x1: Math.round(p1.x),
+            y1: Math.round(p1.y),
+            x2: Math.round(p2.x),
+            y2: Math.round(p2.y),
+            name: name,
+            color: colDef
+          });
+        }
+      }
+
+      if (localSegs.length > 10) {
+        mapSegments = localSegs;
+        lastSlicedLat = lat;
+        lastSlicedLon = lon;
+        vMapStatus.textContent = `${mapSegments.length} calles (Barcelona Vectorial)`;
+        return true;
+      }
+      return false;
+    }
+
+    async function loadBarcelonaMasterIfAvailable(lat, lon) {
+      if (!isInsideBarcelonaArea(lat, lon)) return false;
       try {
-        const d = Math.hypot((lat - 41.3965) * 111132, (lon - 2.1941) * 83362);
-        if (d < 3200) {
-          const resp = await fetch(`barcelona_fallback.json?v=${Date.now()}`);
+        if (!bcnMasterData) {
+          vMapStatus.textContent = "cargando vector barcelona...";
+          const resp = await fetch(`barcelona_complete.json?v=${Date.now()}`);
           if (resp.ok) {
-            const raw = await resp.json();
-            const fallbackSegs = [];
-            for (let i = 0; i < raw.length; i++) {
-              const item = raw[i];
-              const p1 = latLonToMeters(item[0], item[1]);
-              const p2 = latLonToMeters(item[2], item[3]);
-              const color = assignColorByAngleAndType(p1.x, p1.y, p2.x, p2.y, "residential");
-              fallbackSegs.push({
-                x1: Math.round(p1.x),
-                y1: Math.round(p1.y),
-                x2: Math.round(p2.x),
-                y2: Math.round(p2.y),
-                name: "",
-                color: color
-              });
-            }
-            if (fallbackSegs.length > 5) {
-              mapSegments = fallbackSegs;
-              vMapStatus.textContent = `${mapSegments.length} calles (base local)`;
-              return true;
-            }
+            bcnMasterData = await resp.json();
           }
         }
-      } catch(e) {}
+        if (bcnMasterData) {
+          return sliceLocalSegmentsFromMaster(lat, lon);
+        }
+      } catch(e) {
+        console.warn("Error cargando base completa de Barcelona:", e);
+      }
       return false;
     }
 
     // ==========================================
-    // DESCARGA DE CALLES REALES DE ÁREA AMPLIA
+    // DESCARGA DE CALLES REALES PARA EL RESTO DEL MUNDO
     // Cuadro de ~850m de radio (1.7 km de ancho total)
-    // Cubre la pantalla al 100% incluso con el zoom out máximo de 1500m
     // ==========================================
     const OVERPASS_MIRRORS = [
+      "https://overpass.kumi.systems/api/interpreter",
       "https://overpass-api.de/api/interpreter",
       "https://lz4.overpass-api.de/api/interpreter",
-      "https://z.overpass-api.de/api/interpreter",
-      "https://overpass.kumi.systems/api/interpreter"
+      "https://overpass.private.coffee/api/interpreter"
     ];
 
     async function fetchRealStreetsForLocation(lat, lon) {
@@ -484,7 +558,6 @@
       const n = (lat + dLat).toFixed(5);
       const e = (lon + dLon).toFixed(5);
 
-      // Red troncal y residencial amplia: excluye senderos peatonales menores para acelerar la respuesta
       const query = `[out:json][timeout:8];(way(${s},${w},${n},${e})["highway"~"^(primary|secondary|tertiary|residential|trunk)$"];);out geom;`;
 
       let success = false;
@@ -564,9 +637,8 @@
       }
 
       if (!success && mapSegments.length === 0) {
-        // Respaldo de contingencia inmediato si la red o Overpass fallan
-        const loadedFallback = await loadFallbackIfAvailable(lat, lon);
-        if (!loadedFallback) {
+        const loadedMaster = await loadBarcelonaMasterIfAvailable(lat, lon);
+        if (!loadedMaster) {
           vMapStatus.textContent = "reintentando mapa...";
           setTimeout(() => { isFetchingStreets = false; fetchRealStreetsForLocation(lat, lon); }, 5000);
         } else {
@@ -583,10 +655,15 @@
         localStorage.removeItem('compas_cached_map');
       } catch(e) {}
       if (window.compasState.userLat !== null) {
-        vMapStatus.textContent = "recargando mapa amplio...";
-        const loaded = await loadFallbackIfAvailable(window.compasState.userLat, window.compasState.userLon);
-        if (!loaded) {
-          fetchRealStreetsForLocation(window.compasState.userLat, window.compasState.userLon);
+        const lat = window.compasState.userLat;
+        const lon = window.compasState.userLon;
+        if (isInsideBarcelonaArea(lat, lon)) {
+          vMapStatus.textContent = "recargando barcelona...";
+          bcnMasterData = null;
+          await loadBarcelonaMasterIfAvailable(lat, lon);
+        } else {
+          vMapStatus.textContent = "recargando mapa amplio...";
+          fetchRealStreetsForLocation(lat, lon);
         }
       }
     }
@@ -1017,14 +1094,19 @@
             METERS_PER_DEG_LON = METERS_PER_DEG_LAT * Math.cos(MAP_ORIGIN_LAT * Math.PI / 180);
             originInitialized = true;
 
-            // 1. Cargar caché previo si existe y cubre la vista amplia (>= 700 calles)
-            const cachedSegs = loadMapCache(lat, lon);
-            if (cachedSegs && cachedSegs.length >= 700) {
-              mapSegments = cachedSegs;
-              vMapStatus.textContent = `${mapSegments.length} calles (en caché)`;
+            const isBcn = isInsideBarcelonaArea(lat, lon);
+            if (isBcn) {
+              // Cargar de inmediato la base vectorial completa de Barcelona
+              loadBarcelonaMasterIfAvailable(lat, lon);
             } else {
-              // Si el caché era viejo (ej. de 263 calles), cargar de inmediato las 1093 calles
-              loadFallbackIfAvailable(lat, lon);
+              // Fuera de Barcelona: revisar caché local o descargar vía Overpass
+              const cachedSegs = loadMapCache(lat, lon);
+              if (cachedSegs && cachedSegs.length >= 500) {
+                mapSegments = cachedSegs;
+                vMapStatus.textContent = `${mapSegments.length} calles (en caché)`;
+              } else {
+                fetchRealStreetsForLocation(lat, lon);
+              }
             }
 
             const bcn = getBarcelonaDistrictAndBarri(lat, lon);
@@ -1035,12 +1117,19 @@
             }
 
             reverseGeocodeRealLocation(lat, lon);
-            fetchRealStreetsForLocation(lat, lon);
           }
 
           const coordsInMeters = latLonToMeters(lat, lon);
           window.compasState.userX = coordsInMeters.x;
           window.compasState.userY = coordsInMeters.y;
+
+          // Si el usuario camina en Barcelona, desplazar la ventana activa de calles
+          if (bcnMasterData && lastSlicedLat !== null) {
+            const moveDist = Math.hypot((lat - lastSlicedLat) * 111132, (lon - lastSlicedLon) * 83362);
+            if (moveDist > 150) {
+              sliceLocalSegmentsFromMaster(lat, lon);
+            }
+          }
 
           vLat.textContent = lat.toFixed(6);
           vLon.textContent = lon.toFixed(6);
