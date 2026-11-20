@@ -80,7 +80,7 @@
     <div>inclinación : <span id="vTilt">--</span></div>
     <div>calle : <span id="vCurrentStreet">--</span></div>
     <div>zona : <span id="vZone">CONECTANDO GPS...</span></div>
-    <div>mapa : <span id="vMapStatus">esperando ubicación...</span> <span style="opacity:0.55; font-size:10px;">(mantén presionado para zoom)</span></div>
+    <div>mapa : <span id="vMapStatus">esperando ubicación...</span> <span style="opacity:0.55; font-size:10px;">(mantén presionado / desliza abajo)</span></div>
     <div>giroscopio : <span id="btnGyro" class="telemetry-btn" onclick="requestOrientationPermission()" ontouchstart="requestOrientationPermission()">activar</span></div>
   </div>
 
@@ -118,12 +118,19 @@
     const CENTER_X = 128;
     const CENTER_Y = 128;
 
-    // Escala del mapa con soporte interactivo de Zoom Out:
-    // Vista normal: 240 metros | Vista macro (Zoom Out al pulsar): 600 metros
+    // Escala del mapa con soporte de Slider Vertical continuo:
+    // - Vista normal en reposo: 240 metros
+    // - Base al presionar la pantalla: 520 metros
+    // - Zoom máximo al deslizar hacia abajo: 1500 metros
     const VIEW_METERS_NORMAL = 240.0;
-    const VIEW_METERS_ZOOM_OUT = 600.0;
-    let zoomAnim = 0.0; // 0.0 = normal (240m), 1.0 = zoom out (600m)
-    let isZoomingOut = false;
+    const VIEW_METERS_PEEK   = 520.0;
+    const VIEW_METERS_MAX    = 1500.0;
+
+    let isPressing = false;
+    let touchStartY = 0;
+    let currentDragY = 0;
+    let smoothViewMeters = VIEW_METERS_NORMAL;
+    let smoothDragRatio = 0.0;
 
     // Origen de referencia dinámico: se establece en tu ubicación REAL
     let MAP_ORIGIN_LAT = null;
@@ -604,14 +611,21 @@
       const uX = window.compasState.userX;
       const uY = window.compasState.userY;
 
-      // Interpolación suave del Zoom Out (Efecto resorte táctil a 60 FPS)
-      const targetZoom = isZoomingOut ? 1.0 : 0.0;
-      zoomAnim += (targetZoom - zoomAnim) * 0.16;
-      if (Math.abs(targetZoom - zoomAnim) < 0.001) {
-        zoomAnim = targetZoom;
+      // Interpolación suave del Zoom Out con Slider Vertical continuo
+      let targetMeters = VIEW_METERS_NORMAL;
+      let targetDragRatio = 0.0;
+
+      if (isPressing) {
+        // Deslizamiento: 140px de recorrido hacia abajo para control continuo
+        targetDragRatio = Math.min(1.0, currentDragY / 140.0);
+        targetMeters = VIEW_METERS_PEEK + targetDragRatio * (VIEW_METERS_MAX - VIEW_METERS_PEEK);
       }
 
-      const currentViewMeters = VIEW_METERS_NORMAL + zoomAnim * (VIEW_METERS_ZOOM_OUT - VIEW_METERS_NORMAL);
+      smoothViewMeters += (targetMeters - smoothViewMeters) * 0.16;
+      smoothDragRatio += (targetDragRatio - smoothDragRatio) * 0.16;
+      if (Math.abs(targetMeters - smoothViewMeters) < 0.2) smoothViewMeters = targetMeters;
+
+      const currentViewMeters = smoothViewMeters;
       const currentPixelsPerMeter = SCREEN_W / currentViewMeters;
       const cullingRadius = (currentViewMeters / 2.0) * 1.35;
 
@@ -689,7 +703,8 @@
       // 3. ETIQUETAS FLOTANTES SINÉRGICAS (1 O 2 LÍNEAS)
       // Mantiene el texto horizontal y se desvanece suavemente al hacer zoom out
       // ==========================================
-      const labelOpacity = Math.max(0, 1.0 - zoomAnim * 1.8);
+      const zoomProgress = Math.max(0, (smoothViewMeters - VIEW_METERS_NORMAL) / (VIEW_METERS_PEEK - VIEW_METERS_NORMAL));
+      const labelOpacity = Math.max(0, 1.0 - zoomProgress * 1.6);
       if (labelOpacity > 0.05) {
         ctx.save();
         ctx.globalAlpha = labelOpacity;
@@ -828,9 +843,14 @@
       ctx.restore();
 
       // ==========================================
-      // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (50m / 100m)
+      // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (50m / 100m / 200m)
       // ==========================================
-      const scaleMeters = currentViewMeters > 380 ? 100.0 : 50.0;
+      let scaleMeters = 50.0;
+      if (currentViewMeters > 950) {
+        scaleMeters = 200.0;
+      } else if (currentViewMeters > 380) {
+        scaleMeters = 100.0;
+      }
       const scaleBarPx = Math.round(scaleMeters * currentPixelsPerMeter);
       const scaleY = SCREEN_H - 10;
       ctx.strokeStyle = '#94a3b8';
@@ -848,6 +868,44 @@
       ctx.font = '8px monospace';
       ctx.textAlign = 'left';
       ctx.fillText(`${Math.round(scaleMeters)}m`, 12 + scaleBarPx + 5, scaleY + 3);
+
+      // ==========================================
+      // 8. INDICADOR VISUAL DEL SLIDER (Control vertical de zoom)
+      // ==========================================
+      const sliderOpacity = Math.min(1.0, Math.max(0, (smoothViewMeters - VIEW_METERS_NORMAL) / 80.0));
+      if (sliderOpacity > 0.02) {
+        ctx.save();
+        ctx.globalAlpha = sliderOpacity;
+        const trackX = SCREEN_W - 8;
+        const trackTop = 38;
+        const trackH = 80;
+        const trackBottom = trackTop + trackH;
+
+        // Pista vertical
+        ctx.strokeStyle = '#334155';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(trackX, trackTop);
+        ctx.lineTo(trackX, trackBottom);
+        ctx.moveTo(trackX - 3, trackTop);
+        ctx.lineTo(trackX + 3, trackTop);
+        ctx.moveTo(trackX - 3, trackBottom);
+        ctx.lineTo(trackX + 3, trackBottom);
+        ctx.stroke();
+
+        // Cursor del slider que se mueve hacia abajo al deslizar
+        const thumbY = trackTop + smoothDragRatio * trackH;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(trackX - 3, Math.round(thumbY - 3), 7, 7);
+
+        // Métrica en vivo junto al cursor
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '7px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${Math.round(smoothViewMeters)}m`, trackX - 6, Math.round(thumbY + 2));
+
+        ctx.restore();
+      }
 
       requestAnimationFrame(renderOLED);
     }
@@ -980,32 +1038,58 @@
     }
 
     // ==========================================
-    // INTERACCIÓN TÁCTIL: MANTENER PRESIONADO PARA ZOOM OUT
-    // Al presionar la pantalla se aleja la vista (macro 600m), al soltar regresa (micro 240m)
+    // INTERACCIÓN TÁCTIL: MANTENER PRESIONADO + SLIDER VERTICAL
+    // - Al presionar: Zoom Out base (520m)
+    // - Al deslizar hacia abajo: Slider continuo hasta 1500m
+    // - Al soltar: Regreso elástico suave a 240m
     // ==========================================
-    function startZoomOut(e) {
+    function startZoom(e) {
       if (e && e.target === btnGyro) return;
-      isZoomingOut = true;
+      isPressing = true;
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      touchStartY = cy;
+      currentDragY = 0;
     }
 
-    function endZoomOut() {
-      isZoomingOut = false;
+    function moveZoom(e) {
+      if (!isPressing) return;
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      const dy = cy - touchStartY;
+      currentDragY = Math.max(0, dy); // Deslizamiento hacia abajo
+    }
+
+    function endZoom() {
+      isPressing = false;
+      currentDragY = 0;
     }
 
     // Eventos táctiles en móvil (pantalla / canvas)
     canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      startZoomOut(e);
+      startZoom(e);
     }, { passive: false });
 
-    window.addEventListener('touchend', endZoomOut);
-    window.addEventListener('touchcancel', endZoomOut);
+    window.addEventListener('touchmove', (e) => {
+      if (isPressing) {
+        moveZoom(e);
+      }
+    }, { passive: true });
 
-    // Eventos de ratón para pruebas
+    window.addEventListener('touchend', endZoom);
+    window.addEventListener('touchcancel', endZoom);
+
+    // Eventos de ratón para pruebas en escritorio
     canvas.addEventListener('mousedown', (e) => {
-      startZoomOut(e);
+      startZoom(e);
     });
-    window.addEventListener('mouseup', endZoomOut);
+
+    window.addEventListener('mousemove', (e) => {
+      if (isPressing) {
+        moveZoom(e);
+      }
+    });
+
+    window.addEventListener('mouseup', endZoom);
 
     // Inicializar al cargar
     window.addEventListener('DOMContentLoaded', () => {
