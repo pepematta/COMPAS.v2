@@ -426,8 +426,12 @@
     // Extrae dinámicamente un radio de 1200m alrededor de tu GPS exacto
     // ==========================================
     let bcnMasterData = null;
+    let bcnTopographyData = null;
+    let activeTopographyLines = [];
     let lastSlicedLat = null;
     let lastSlicedLon = null;
+    let lastTopoSlicedLat = null;
+    let lastTopoSlicedLon = null;
 
     const BCN_COLOR_PALETTE = [
       STREET_COLORS.AMBER,   // 0: Cerdà SO-NE
@@ -440,6 +444,57 @@
 
     function isInsideBarcelonaArea(lat, lon) {
       return (lat >= 41.30 && lat <= 41.48 && lon >= 2.05 && lon <= 2.25);
+    }
+
+    // ==========================================
+    // CORTE ESPACIAL DE LÍNEAS TOPOGRÁFICAS
+    // Extrae curvas de nivel (cada 20m) en un radio de 1600m alrededor del usuario
+    // ==========================================
+    function sliceTopographyFromMaster(lat, lon) {
+      if (!bcnTopographyData) return;
+      if (!originInitialized) return;
+
+      const lines = bcnTopographyData;
+      const sliced = [];
+      const maxDistM = 1600;
+      const maxDistSq = maxDistM * maxDistM;
+      const mPerDegLat = METERS_PER_DEG_LAT;
+      const mPerDegLon = METERS_PER_DEG_LON;
+
+      for (let i = 0; i < lines.length; i++) {
+        const poly = lines[i];
+        let currentSubline = null;
+
+        for (let j = 0; j < poly.length; j++) {
+          const pt = poly[j];
+          const dy = (pt[0] - lat) * mPerDegLat;
+          const dx = (pt[1] - lon) * mPerDegLon;
+          const inside = (Math.abs(dy) <= maxDistM && Math.abs(dx) <= maxDistM && (dx * dx + dy * dy <= maxDistSq));
+
+          if (inside) {
+            const m = latLonToMeters(pt[0], pt[1]);
+            if (!currentSubline) {
+              currentSubline = [];
+              if (j > 0) {
+                const prevM = latLonToMeters(poly[j - 1][0], poly[j - 1][1]);
+                currentSubline.push(Math.round(prevM.x), Math.round(prevM.y));
+              }
+              sliced.push(currentSubline);
+            }
+            currentSubline.push(Math.round(m.x), Math.round(m.y));
+          } else {
+            if (currentSubline) {
+              const exitM = latLonToMeters(pt[0], pt[1]);
+              currentSubline.push(Math.round(exitM.x), Math.round(exitM.y));
+              currentSubline = null;
+            }
+          }
+        }
+      }
+
+      activeTopographyLines = sliced;
+      lastTopoSlicedLat = lat;
+      lastTopoSlicedLon = lon;
     }
 
     function sliceLocalSegmentsFromMaster(lat, lon) {
@@ -507,6 +562,9 @@
         mapSegments = localSegs;
         lastSlicedLat = lat;
         lastSlicedLon = lon;
+        if (bcnTopographyData) {
+          sliceTopographyFromMaster(lat, lon);
+        }
         vMapStatus.textContent = `${mapSegments.length} calles (Barcelona Vectorial)`;
         return true;
       }
@@ -522,6 +580,19 @@
           if (resp.ok) {
             bcnMasterData = await resp.json();
           }
+        }
+        if (!bcnTopographyData) {
+          fetch(`barcelona_topography.json?v=${Date.now()}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+              if (data) {
+                bcnTopographyData = data;
+                if (window.compasState.userLat !== null) {
+                  sliceTopographyFromMaster(window.compasState.userLat, window.compasState.userLon);
+                }
+              }
+            })
+            .catch(e => console.warn("Topografía no disponible:", e));
         }
         if (bcnMasterData) {
           return sliceLocalSegmentsFromMaster(lat, lon);
@@ -660,6 +731,7 @@
         if (isInsideBarcelonaArea(lat, lon)) {
           vMapStatus.textContent = "recargando barcelona...";
           bcnMasterData = null;
+          bcnTopographyData = null;
           await loadBarcelonaMasterIfAvailable(lat, lon);
         } else {
           vMapStatus.textContent = "recargando mapa amplio...";
@@ -725,6 +797,42 @@
       const currentViewMeters = smoothViewMeters;
       const currentPixelsPerMeter = SCREEN_W / currentViewMeters;
       const cullingRadius = (currentViewMeters / 2.0) * 1.45;
+
+      // 1.5. CAPA 0: LÍNEAS TOPOGRÁFICAS (Gris perla tenue de fondo, detrás de las calles)
+      if (activeTopographyLines.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(218, 224, 233, 0.35)'; // Gris perla tenue de relieve
+        ctx.lineWidth = 0.75;
+        ctx.beginPath();
+
+        for (let t = 0; t < activeTopographyLines.length; t++) {
+          const sub = activeTopographyLines[t];
+          if (sub.length < 4) continue;
+
+          for (let p = 0; p < sub.length; p += 2) {
+            const mx = sub[p];
+            const my = sub[p + 1];
+            const dx = mx - uX;
+            const dy = my - uY;
+
+            // Rotación 2D Heading-Up:
+            const rx = dx * cosH - dy * sinH;
+            const ry = dx * sinH + dy * cosH;
+
+            // Proyección a pantalla 256x256
+            const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
+            const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
+
+            if (p === 0) {
+              ctx.moveTo(sx, sy);
+            } else {
+              ctx.lineTo(sx, sy);
+            }
+          }
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // 2. Agrupar trazos por color para dibujar todo en solo 4 llamadas a canvas
       const linesByColor = {
@@ -1123,11 +1231,14 @@
           window.compasState.userX = coordsInMeters.x;
           window.compasState.userY = coordsInMeters.y;
 
-          // Si el usuario camina en Barcelona, desplazar la ventana activa de calles
+          // Si el usuario camina en Barcelona, desplazar la ventana activa de calles y relieve
           if (bcnMasterData && lastSlicedLat !== null) {
             const moveDist = Math.hypot((lat - lastSlicedLat) * 111132, (lon - lastSlicedLon) * 83362);
             if (moveDist > 150) {
               sliceLocalSegmentsFromMaster(lat, lon);
+              if (bcnTopographyData) {
+                sliceTopographyFromMaster(lat, lon);
+              }
             }
           }
 
