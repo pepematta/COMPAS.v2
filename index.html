@@ -80,30 +80,36 @@
     <div>inclinación : <span id="vTilt">--</span></div>
     <div>calle : <span id="vCurrentStreet">--</span></div>
     <div>zona : <span id="vZone">CONECTANDO GPS...</span></div>
-    <div>mapa : <span id="vMapStatus">esperando ubicación...</span> <span style="opacity:0.55; font-size:10px;">(mantén presionado / desliza abajo)</span></div>
+    <div>mapa : <span id="vMapStatus" onclick="forceRefreshMap()" ontouchstart="forceRefreshMap()" style="cursor:pointer; text-decoration:underline;">esperando ubicación...</span> <span style="opacity:0.55; font-size:10px;">(mantén presionado / desliza abajo)</span></div>
     <div>giroscopio : <span id="btnGyro" class="telemetry-btn" onclick="requestOrientationPermission()" ontouchstart="requestOrientationPermission()">activar</span></div>
   </div>
 
   <script>
     // ==========================================
-    // CACHÉ LOCAL PERSISTENTE
-    // Carga las calles instantáneamente (0 ms) en siguientes accesos
+    // CACHÉ LOCAL PERSISTENTE (v4 Ampliado)
+    // Limpia automáticamente cachés anteriores de 263 calles y exige >= 700 calles
     // ==========================================
+    try {
+      localStorage.removeItem('compas_cached_map');
+      localStorage.removeItem('compas_map_cached_v1');
+    } catch(e) {}
+
     function saveMapCache(lat, lon, segments) {
       try {
         const data = { lat, lon, segments, ts: Date.now() };
-        localStorage.setItem('compas_cached_map', JSON.stringify(data));
+        localStorage.setItem('compas_map_v4_wide', JSON.stringify(data));
       } catch(e) {}
     }
 
     function loadMapCache(lat, lon) {
       try {
-        const raw = localStorage.getItem('compas_cached_map');
+        const raw = localStorage.getItem('compas_map_v4_wide');
         if (!raw) return null;
         const data = JSON.parse(raw);
         const dLat = (data.lat - lat) * 111132;
         const dLon = (data.lon - lon) * 83362;
-        if (Math.hypot(dLat, dLon) < 450 && data.segments && data.segments.length > 5) {
+        // Solo aceptar si cubre el área amplia (mínimo 700 calles)
+        if (Math.hypot(dLat, dLon) < 600 && data.segments && data.segments.length >= 700) {
           return data.segments;
         }
       } catch(e) {}
@@ -422,7 +428,7 @@
       try {
         const d = Math.hypot((lat - 41.3965) * 111132, (lon - 2.1941) * 83362);
         if (d < 3200) {
-          const resp = await fetch('barcelona_fallback.json');
+          const resp = await fetch(`barcelona_fallback.json?v=${Date.now()}`);
           if (resp.ok) {
             const raw = await resp.json();
             const fallbackSegs = [];
@@ -568,6 +574,20 @@
         }
       } else {
         isFetchingStreets = false;
+      }
+    }
+
+    async function forceRefreshMap() {
+      try {
+        localStorage.removeItem('compas_map_v4_wide');
+        localStorage.removeItem('compas_cached_map');
+      } catch(e) {}
+      if (window.compasState.userLat !== null) {
+        vMapStatus.textContent = "recargando mapa amplio...";
+        const loaded = await loadFallbackIfAvailable(window.compasState.userLat, window.compasState.userLon);
+        if (!loaded) {
+          fetchRealStreetsForLocation(window.compasState.userLat, window.compasState.userLon);
+        }
       }
     }
 
@@ -997,12 +1017,13 @@
             METERS_PER_DEG_LON = METERS_PER_DEG_LAT * Math.cos(MAP_ORIGIN_LAT * Math.PI / 180);
             originInitialized = true;
 
-            // 1. Cargar caché previo si existe para visualización inmediata en 0 ms
+            // 1. Cargar caché previo si existe y cubre la vista amplia (>= 700 calles)
             const cachedSegs = loadMapCache(lat, lon);
-            if (cachedSegs) {
+            if (cachedSegs && cachedSegs.length >= 700) {
               mapSegments = cachedSegs;
               vMapStatus.textContent = `${mapSegments.length} calles (en caché)`;
             } else {
+              // Si el caché era viejo (ej. de 263 calles), cargar de inmediato las 1093 calles
               loadFallbackIfAvailable(lat, lon);
             }
 
