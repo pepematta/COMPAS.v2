@@ -421,7 +421,7 @@
     async function loadFallbackIfAvailable(lat, lon) {
       try {
         const d = Math.hypot((lat - 41.3965) * 111132, (lon - 2.1941) * 83362);
-        if (d < 1500) {
+        if (d < 3200) {
           const resp = await fetch('barcelona_fallback.json');
           if (resp.ok) {
             const raw = await resp.json();
@@ -452,9 +452,9 @@
     }
 
     // ==========================================
-    // DESCARGA LIGERA Y FILTRADA DE CALLES REALES
-    // Área optimizada de ~270m de radio (540m de cuadro total = 0.29 km²)
-    // 67% menos datos para respuesta instantánea en servidores Overpass
+    // DESCARGA DE CALLES REALES DE ÁREA AMPLIA
+    // Cuadro de ~850m de radio (1.7 km de ancho total)
+    // Cubre la pantalla al 100% incluso con el zoom out máximo de 1500m
     // ==========================================
     const OVERPASS_MIRRORS = [
       "https://overpass-api.de/api/interpreter",
@@ -470,16 +470,16 @@
         vMapStatus.textContent = "descargando calles reales...";
       }
 
-      // Cuadro acotado a ~270 metros (cubre el 100% de la pantalla sin saturar la API)
-      const dLat = 0.0024;
-      const dLon = 0.0024 / Math.cos(lat * Math.PI / 180);
+      // Cuadro de 850 metros de radio para cubrir hasta 1500m de visualización completa
+      const dLat = 0.0076;
+      const dLon = 0.0076 / Math.cos(lat * Math.PI / 180);
       const s = (lat - dLat).toFixed(5);
       const w = (lon - dLon).toFixed(5);
       const n = (lat + dLat).toFixed(5);
       const e = (lon + dLon).toFixed(5);
 
-      // Sintaxis de alta velocidad: BBOX primero para indexación B-Tree inmediata en servidor
-      const query = `[out:json][timeout:6];(way(${s},${w},${n},${e})["highway"~"^(primary|secondary|tertiary|residential|pedestrian)$"];);out geom;`;
+      // Red troncal y residencial amplia: excluye senderos peatonales menores para acelerar la respuesta
+      const query = `[out:json][timeout:8];(way(${s},${w},${n},${e})["highway"~"^(primary|secondary|tertiary|residential|trunk)$"];);out geom;`;
 
       let success = false;
 
@@ -487,7 +487,7 @@
         const mirror = OVERPASS_MIRRORS[idx];
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 4500);
+          const timeoutId = setTimeout(() => controller.abort(), 6500);
 
           let resp = null;
           try {
@@ -542,7 +542,7 @@
                 newSegs.push({ x1, y1, x2, y2, name, color });
               }
             }
-            if (newSegs.length >= 260) break;
+            if (newSegs.length >= 1100) break;
           }
 
           if (newSegs.length > 5) {
@@ -627,7 +627,7 @@
 
       const currentViewMeters = smoothViewMeters;
       const currentPixelsPerMeter = SCREEN_W / currentViewMeters;
-      const cullingRadius = (currentViewMeters / 2.0) * 1.35;
+      const cullingRadius = (currentViewMeters / 2.0) * 1.45;
 
       // 2. Agrupar trazos por color para dibujar todo en solo 4 llamadas a canvas
       const linesByColor = {
