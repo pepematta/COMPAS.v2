@@ -272,7 +272,7 @@
 
     const VIEW_METERS_NORMAL = 240.0;
     const VIEW_METERS_PEEK   = 360.0;
-    const VIEW_METERS_MAX    = 12000.0;
+    const VIEW_METERS_MAX    = 13000.0;
 
     let isPressing = false;
     let touchStartY = 0;
@@ -480,6 +480,18 @@
       { key: 'santmarti',         name: 'SANT MARTÍ',         lat: 41.40870, lon: 2.19880 }
     ];
 
+    // Elementos geográficos principales de Barcelona y entorno (OpenStreetMap) para la Zona Geográfica (12000m - 13000m)
+    const BARCELONA_GEOGRAPHIC_FEATURES = [
+      { key: 'mar',        label: 'mar mediterrània',        lat: 41.3800, lon: 2.2280 },
+      { key: 'llobregat',  label: 'riu llobregat',           lat: 41.3450, lon: 2.1150 },
+      { key: 'besos',      label: 'riu besòs',               lat: 41.4220, lon: 2.2150 },
+      { key: 'tibidabo',   label: 'tibidabo (512m)',         lat: 41.4219, lon: 2.1189 },
+      { key: 'collserola', label: 'serra de collserola',     lat: 41.4280, lon: 2.1050 },
+      { key: 'montjuic',   label: 'montjuïc (173m)',         lat: 41.3639, lon: 2.1656 },
+      { key: 'rovira',     label: 'turó de la rovira',       lat: 41.4192, lon: 2.1617 },
+      { key: 'santpere',   label: 'sant pere màrtir (384m)', lat: 41.3961, lon: 2.1020 }
+    ];
+
     function splitDistrictNameToLines(name) {
       if (!name) return [];
       if (name.length <= 15) return [name.toUpperCase()];
@@ -566,6 +578,7 @@
     const streetLabelShiftMap = new Map();
     const barrioLabelShiftMap = new Map();
     const districtLabelShiftMap = new Map();
+    const geoLabelShiftMap = new Map();
     let labelAnimFrameCount = 0;
 
     /**
@@ -1019,19 +1032,22 @@
 
       if (isPressing) {
         targetDragRatio = Math.min(1.0, currentDragY / 160.0);
-        // Mapeo progresivo calibrado para recorrer cómodamente las 4 zonas de zoom:
+        // Mapeo progresivo calibrado para recorrer cómodamente las 5 zonas de zoom:
         // - Zona Cercana (240m - 600m) en el primer 25% del recorrido (0 a 0.25)
         // - Zona Media (600m - 1500m) entre el 25% y 50% del recorrido (0.25 a 0.50)
         // - Zona de Barrios (1500m - 2500m) entre el 50% y 75% del recorrido (0.50 a 0.75)
-        // - Zona Distante (2500m - 12000m) en el 25% final (0.75 a 1.0)
+        // - Zona Distante (2500m - 12000m) entre el 75% y 92% del recorrido (0.75 a 0.92)
+        // - Zona Geográfica (12000m - 13000m) en el tramo final (0.92 a 1.0)
         if (targetDragRatio <= 0.25) {
           targetMeters = VIEW_METERS_PEEK + (targetDragRatio / 0.25) * (600.0 - VIEW_METERS_PEEK);
         } else if (targetDragRatio <= 0.50) {
           targetMeters = 600.0 + ((targetDragRatio - 0.25) / 0.25) * (1500.0 - 600.0);
         } else if (targetDragRatio <= 0.75) {
           targetMeters = 1500.0 + ((targetDragRatio - 0.50) / 0.25) * (2500.0 - 1500.0);
+        } else if (targetDragRatio <= 0.92) {
+          targetMeters = 2500.0 + ((targetDragRatio - 0.75) / 0.17) * (12000.0 - 2500.0);
         } else {
-          targetMeters = 2500.0 + ((targetDragRatio - 0.75) / 0.25) * (VIEW_METERS_MAX - 2500.0);
+          targetMeters = 12000.0 + ((targetDragRatio - 0.92) / 0.08) * (VIEW_METERS_MAX - 12000.0);
         }
       }
 
@@ -1233,59 +1249,66 @@
       }
 
       // =========================================================================
-      // ARQUITECTURA DE 4 CAPAS SEMÁNTICAS POR NIVEL DE ZOOM:
-      // 1. ZONA CERCANA  (240m - 600m): Todas las calles (100%) + etiquetas de calles en minúsculas (sin prioridad).
-      // 2. ZONA MEDIA    (600m - 1500m): Todas las calles (100%) + etiquetas de calles en minúsculas (priorizando vías principales).
+      // ARQUITECTURA DE 5 CAPAS SEMÁNTICAS POR NIVEL DE ZOOM:
+      // 1. ZONA CERCANA    (240m - 600m): Todas las calles (100%) + etiquetas de calles en minúsculas (sin prioridad).
+      // 2. ZONA MEDIA      (600m - 1500m): Todas las calles (100%) + etiquetas de calles en minúsculas (priorizando vías principales).
       // 3. ZONA DE BARRIOS (1500m - 2500m): Todas las calles (100%) + SÓLO etiquetas de barrios (primera letra mayúscula). Ninguna calle rotulada.
-      // 4. ZONA DISTANTE (2500m - 12000m): Todas las calles (100%) + SÓLO etiquetas de distritos en mayúsculas.
+      // 4. ZONA DISTANTE   (2500m - 12000m): Todas las calles (100%) + SÓLO etiquetas de distritos en mayúsculas.
+      // 5. ZONA GEOGRÁFICA (12000m - 13000m): Vista exclusiva de relieve y geografía.
+      //    Calles 0% (ocultas) y distritos 0% (ocultos). SÓLO curvas de nivel + etiquetas halo para ríos, montañas y mar.
       // =========================================================================
 
-      // A) VISIBILIDAD DE CALLES SECUNDARIAS / PEQUEÑAS:
-      // Visibles al 100% en todas las 4 zonas.
-      // Grosor con jerarquía: 1.1px en zonas cercana y media; trazo fino suave en barrios y distante (> 1500m).
-      const secLineWidth = (smoothViewMeters <= 1500)
-        ? 1.1
-        : Math.max(0.65, 1.1 - ((smoothViewMeters - 1500) / 10500) * 0.45);
+      // A) VISIBILIDAD DE CALLES SECUNDARIAS / PEQUEÑAS Y B) VÍAS PRINCIPALES:
+      // Visibles al 100% en zonas 1 a 4 (240m - 12000m).
+      // En Zona Geográfica (> 12000m) desaparecen por completo para dejar visible exclusivamente la orografía.
+      const streetFade = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 11800) / 400));
 
-      ctx.lineWidth = secLineWidth;
-      for (const key in districtBatches) {
-        const batch = districtBatches[key];
-        if (batch.sec.length === 0) continue;
-        ctx.save();
-        ctx.strokeStyle = batch.color;
-        const effAlpha = (typeof batch.opacity === 'number') ? batch.opacity : 1.0;
-        if (effAlpha < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, effAlpha));
-        ctx.beginPath();
-        for (let j = 0; j < batch.sec.length; j += 4) {
-          ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
-          ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
+      if (streetFade > 0.01) {
+        // Grosor con jerarquía: 1.1px en zonas cercana y media; trazo fino suave en barrios y distante (> 1500m).
+        const secLineWidth = (smoothViewMeters <= 1500)
+          ? 1.1
+          : Math.max(0.65, 1.1 - ((smoothViewMeters - 1500) / 10500) * 0.45);
+
+        ctx.lineWidth = secLineWidth;
+        for (const key in districtBatches) {
+          const batch = districtBatches[key];
+          if (batch.sec.length === 0) continue;
+          ctx.save();
+          ctx.strokeStyle = batch.color;
+          const effAlpha = ((typeof batch.opacity === 'number') ? batch.opacity : 1.0) * streetFade;
+          if (effAlpha < 0.99) ctx.globalAlpha = Math.max(0.0, Math.min(1.0, effAlpha));
+          ctx.beginPath();
+          for (let j = 0; j < batch.sec.length; j += 4) {
+            ctx.moveTo(batch.sec[j], batch.sec[j + 1]);
+            ctx.lineTo(batch.sec[j + 2], batch.sec[j + 3]);
+          }
+          ctx.stroke();
+          ctx.restore();
         }
-        ctx.stroke();
-        ctx.restore();
-      }
 
-      // B) VISIBILIDAD DE VÍAS PRINCIPALES:
-      // Visibles al 100% en todas las zonas.
-      // Grosor destacado y grueso: 2.4px en zonas cercana y media; 2.0px–1.6px en barrios y distante (> 1500m).
-      const priLineWidth = (smoothViewMeters <= 1500)
-        ? 2.4
-        : Math.max(1.6, 2.4 - ((smoothViewMeters - 1500) / 10500) * 0.8);
+        // B) VISIBILIDAD DE VÍAS PRINCIPALES:
+        // Visibles al 100% en zonas 1 a 4.
+        // Grosor destacado y grueso: 2.4px en zonas cercana y media; 2.0px–1.6px en barrios y distante (> 1500m).
+        const priLineWidth = (smoothViewMeters <= 1500)
+          ? 2.4
+          : Math.max(1.6, 2.4 - ((smoothViewMeters - 1500) / 10500) * 0.8);
 
-      ctx.lineWidth = priLineWidth;
-      for (const key in districtBatches) {
-        const batch = districtBatches[key];
-        if (batch.pri.length === 0) continue;
-        ctx.save();
-        ctx.strokeStyle = batch.color;
-        const effAlpha = (typeof batch.opacity === 'number') ? batch.opacity : 1.0;
-        if (effAlpha < 0.99) ctx.globalAlpha = Math.max(0.25, Math.min(1.0, effAlpha));
-        ctx.beginPath();
-        for (let j = 0; j < batch.pri.length; j += 4) {
-          ctx.moveTo(batch.pri[j], batch.pri[j + 1]);
-          ctx.lineTo(batch.pri[j + 2], batch.pri[j + 3]);
+        ctx.lineWidth = priLineWidth;
+        for (const key in districtBatches) {
+          const batch = districtBatches[key];
+          if (batch.pri.length === 0) continue;
+          ctx.save();
+          ctx.strokeStyle = batch.color;
+          const effAlpha = ((typeof batch.opacity === 'number') ? batch.opacity : 1.0) * streetFade;
+          if (effAlpha < 0.99) ctx.globalAlpha = Math.max(0.0, Math.min(1.0, effAlpha));
+          ctx.beginPath();
+          for (let j = 0; j < batch.pri.length; j += 4) {
+            ctx.moveTo(batch.pri[j], batch.pri[j + 1]);
+            ctx.lineTo(batch.pri[j + 2], batch.pri[j + 3]);
+          }
+          ctx.stroke();
+          ctx.restore();
         }
-        ctx.stroke();
-        ctx.restore();
       }
 
       // ==========================================
@@ -1498,9 +1521,11 @@
       // ==========================================
       // E) ETIQUETAS DE DISTRITOS EN ZONA DISTANTE (2500m - 12000m)
       // Aparecen exclusivamente al entrar en Zona Distante (> 2500m), en mayúsculas (ej: "EIXAMPLE")
-      // Ocultas en Zona Cercana, Zona Media y Zona de Barrios
+      // Ocultas en Zona Cercana, Zona Media, Zona de Barrios y Zona Geográfica (> 12000m)
       // ==========================================
-      const districtOpacity = Math.min(1.0, Math.max(0, (smoothViewMeters - 2450) / 100));
+      const distFadeIn = Math.min(1.0, Math.max(0, (smoothViewMeters - 2450) / 100));
+      const distFadeOut = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 11800) / 400));
+      const districtOpacity = Math.min(distFadeIn, distFadeOut);
       if (districtOpacity > 0.02) {
         ctx.save();
         ctx.globalAlpha = districtOpacity;
@@ -1604,6 +1629,99 @@
           for (const [key, shift] of districtLabelShiftMap.entries()) {
             if (labelAnimFrameCount - shift.lastSeen > 90) {
               districtLabelShiftMap.delete(key);
+            }
+          }
+        }
+      }
+
+      // ==========================================
+      // F) ETIQUETAS GEOGRÁFICAS EN ZONA GEOGRÁFICA (12000m - 13000m)
+      // En esta capa desaparecen todas las calles y etiquetas de distritos.
+      // Vista exclusiva para la geografía: relieve y etiquetas de ríos, montañas y mar.
+      // Estilo de etiqueta idéntico al de las calles: tipo halo sin caja/insignia, en minúsculas.
+      // ==========================================
+      const geoOpacity = Math.max(0, Math.min(1.0, (smoothViewMeters - 11800) / 400));
+      if (geoOpacity > 0.02) {
+        ctx.save();
+        ctx.globalAlpha = geoOpacity;
+        ctx.font = "600 8.5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        const visibleGeos = [];
+        for (let g = 0; g < BARCELONA_GEOGRAPHIC_FEATURES.length; g++) {
+          const feat = BARCELONA_GEOGRAPHIC_FEATURES[g];
+          const m = latLonToMeters(feat.lat, feat.lon);
+          const dx = m.x - uX;
+          const dy = m.y - uY;
+
+          const rx = dx * cosH - dy * sinH;
+          const ry = dx * sinH + dy * cosH;
+
+          const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
+          const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
+
+          if (sx >= 12 && sx <= SCREEN_W - 12 && sy >= 28 && sy <= SCREEN_H - 14) {
+            visibleGeos.push({ ...feat, sx, sy });
+          }
+        }
+
+        const geoBoxes = [];
+        for (let g = 0; g < visibleGeos.length; g++) {
+          const feat = visibleGeos[g];
+          const tw = ctx.measureText(feat.label).width;
+          geoBoxes.push({
+            name: feat.key,
+            label: feat.label,
+            w: Math.round(tw + 8),
+            h: 12,
+            origX: feat.sx,
+            origY: feat.sy,
+            cx: feat.sx,
+            cy: feat.sy
+          });
+        }
+
+        const geoBounds = { minX: 10, maxX: SCREEN_W - 10, minY: 28, maxY: SCREEN_H - 12 };
+        relaxLabelBoxes(geoBoxes, geoBounds, 18);
+
+        for (let g = 0; g < geoBoxes.length; g++) {
+          const box = geoBoxes[g];
+          const targetShiftX = box.cx - box.origX;
+          const targetShiftY = box.cy - box.origY;
+
+          let shift = geoLabelShiftMap.get(box.name);
+          if (!shift) {
+            shift = { dx: targetShiftX, dy: targetShiftY, lastSeen: labelAnimFrameCount };
+            geoLabelShiftMap.set(box.name, shift);
+          } else {
+            const easing = 0.22;
+            shift.dx += (targetShiftX - shift.dx) * easing;
+            shift.dy += (targetShiftY - shift.dy) * easing;
+            shift.lastSeen = labelAnimFrameCount;
+          }
+
+          const renderCx = box.origX + shift.dx;
+          const renderCy = box.origY + shift.dy;
+
+          // 1. Halo protector en color de fondo del mapa (knockout halo sin caja)
+          ctx.strokeStyle = theme.mapBg;
+          ctx.lineWidth = 3.5;
+          ctx.lineJoin = "round";
+          ctx.miterLimit = 2;
+          ctx.strokeText(box.label, renderCx, renderCy);
+
+          // 2. Texto tipográfico limpio en minúsculas
+          ctx.fillStyle = theme.labelText;
+          ctx.fillText(box.label, renderCx, renderCy);
+        }
+
+        ctx.restore();
+
+        if (labelAnimFrameCount % 120 === 0) {
+          for (const [key, shift] of geoLabelShiftMap.entries()) {
+            if (labelAnimFrameCount - shift.lastSeen > 90) {
+              geoLabelShiftMap.delete(key);
             }
           }
         }
@@ -1723,7 +1841,9 @@
 
       // 7. BARRA DE ESCALA GRÁFICA DINÁMICA (con tabular-nums)
       let scaleMeters = 50.0;
-      if (currentViewMeters > 7000) {
+      if (currentViewMeters > 9000) {
+        scaleMeters = 3000.0;
+      } else if (currentViewMeters > 7000) {
         scaleMeters = 2000.0;
       } else if (currentViewMeters > 3200) {
         scaleMeters = 1000.0;
