@@ -1179,34 +1179,53 @@
           batch.sec.push(sx1, sy1, sx2, sy2);
         }
 
-        // Candidatos con nombre para etiquetas flotantes de calles (deduplicados reteniendo el punto más cercano al centro de visión)
+        // Candidatos con nombre para etiquetas orientadas a lo largo de los vectores:
+        // Se calcula el vector en pantalla, ángulo orientado (never upside-down) y se elige el tramo central óptimo
         if (seg.name && seg.name.length > 1) {
           const mx = (sx1 + sx2) / 2;
           const my = (sy1 + sy2) / 2;
-          if (mx >= 24 && mx <= SCREEN_W - 24 && my >= 28 && my <= SCREEN_H - 18) {
-            const key = seg.name.trim().toLowerCase();
-            const distCenter = Math.hypot(mx - CENTER_X, my - CENTER_Y);
-            if (isMajor) {
-              const existing = majorCandidatesMap.get(key);
-              if (!existing || distCenter < existing.distCenter) {
-                majorCandidatesMap.set(key, {
-                  name: seg.name,
-                  mx, my,
-                  isMajor: true,
-                  districtKey: distKey,
-                  distCenter
-                });
+          if (mx >= 20 && mx <= SCREEN_W - 20 && my >= 26 && my <= SCREEN_H - 16) {
+            const segLen = Math.hypot(sx2 - sx1, sy2 - sy1);
+            if (segLen >= 10) {
+              const key = seg.name.trim().toLowerCase();
+              const distCenter = Math.hypot(mx - CENTER_X, my - CENTER_Y);
+
+              // Ángulo orientado a lo largo de la calle
+              let angle = Math.atan2(sy2 - sy1, sx2 - sx1);
+              // Regla "Never upside-down": siempre legible de izquierda a derecha
+              if (angle > Math.PI / 2) {
+                angle -= Math.PI;
+              } else if (angle < -Math.PI / 2) {
+                angle += Math.PI;
               }
-            } else {
-              const existing = minorCandidatesMap.get(key);
-              if (!existing || distCenter < existing.distCenter) {
-                minorCandidatesMap.set(key, {
-                  name: seg.name,
-                  mx, my,
-                  isMajor: false,
-                  districtKey: distKey,
-                  distCenter
-                });
+
+              // Puntuación del mejor tramo:
+              // - Prefiere tramos más largos (cuerpo de manzana, lejos de esquinas)
+              // - Prefiere la zona intermedia de lectura (radio ~65px), evitando saturar el centro exacto (R < 35px)
+              const score = segLen * 1.5 - Math.abs(distCenter - 65);
+
+              const candidate = {
+                name: seg.name,
+                formattedName: formatStreetName(seg.name).toLowerCase(),
+                mx, my,
+                angle,
+                segLen,
+                isMajor,
+                districtKey: distKey,
+                distCenter,
+                score
+              };
+
+              if (isMajor) {
+                const existing = majorCandidatesMap.get(key);
+                if (!existing || candidate.score > existing.score) {
+                  majorCandidatesMap.set(key, candidate);
+                }
+              } else {
+                const existing = minorCandidatesMap.get(key);
+                if (!existing || candidate.score > existing.score) {
+                  minorCandidatesMap.set(key, candidate);
+                }
               }
             }
           }
@@ -1270,24 +1289,26 @@
       }
 
       // ==========================================
-      // C) ETIQUETAS DE CALLES FLOTANTES EN MINÚSCULAS (ej: "c. marina"):
+      // C) ETIQUETAS DE CALLES ORIENTADAS AL VECTOR CON HALO (ej: "c. marina"):
+      // - Impresas justo arriba de los vectores de las calles, alineadas con su trayectoria.
+      // - Eliminan la auto-orientación horizontal en favor de una clara asociación calle-etiqueta.
+      // - Impresas en el centro del tramo de la manzana (lejos de intersecciones).
+      // - Sin caja/insignia: texto tipográfico puro con halo protector del color de fondo del mapa.
       // - Priorización según zona de zoom:
       //   * Zona Cercana (240m - 600m): Sin prioridad de vías principales sobre secundarias.
       //     Todas las vías compiten por cercanía al usuario (centro de pantalla) para dar visibilidad local.
       //   * Zona Media (600m - 1500m): SÍ se priorizan vías principales sobre secundarias.
       //     Las principales van primero, y las secundarias completan el cupo hasta 6 etiquetas.
       // - Cupo máximo: hasta 6 etiquetas simultáneas.
-      // - SE MUESTRAN TODAS LAS 6 ETIQUETAS: Ninguna etiqueta se descarta por colisión.
-      // - Reconciliación espacial relajada + suavizado temporal (smooth easing) para evitar superposiciones.
       // - Zona de Barrios y Distante (> 1500m): Se ocultan todas las etiquetas de calles.
       // ==========================================
       const streetLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1450) / 100));
 
       if (streetLabelOpacity > 0.02) {
-        labelAnimFrameCount++;
-
         ctx.save();
-        ctx.font = "500 8.5px 'IBM Plex Mono', monospace";
+        ctx.globalAlpha = streetLabelOpacity;
+        ctx.font = "600 8.5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
         // Selección rigurosa de las hasta 6 etiquetas según zona:
@@ -1328,96 +1349,30 @@
           }
         }
 
-        // Construir cajas con dimensiones exactas según texto
-        const labelBoxes = [];
+        // Renderizado orientado a lo largo del vector vial con halo protector
         for (let k = 0; k < candidateList.length; k++) {
           const item = candidateList[k];
-          const streetNameLower = item.name.toLowerCase();
-          const lines = splitStreetNameToLines(streetNameLower);
-          const badgeBorderColor = getDistrictColor(item.districtKey, currentThemeKey);
-
-          let badgeW = 0;
-          let badgeH = 0;
-          if (lines.length === 1) {
-            const tw = ctx.measureText(lines[0]).width;
-            badgeW = Math.round(tw + 8);
-            badgeH = 14;
-          } else {
-            const tw1 = ctx.measureText(lines[0]).width;
-            const tw2 = ctx.measureText(lines[1]).width;
-            badgeW = Math.round(Math.max(tw1, tw2) + 8);
-            badgeH = 23;
-          }
-
-          const origX = item.mx;
-          const origY = item.my;
-
-          labelBoxes.push({
-            name: streetNameLower,
-            lines,
-            badgeBorderColor,
-            w: badgeW,
-            h: badgeH,
-            origX,
-            origY,
-            cx: origX,
-            cy: origY
-          });
-        }
-
-        // Reconciliación espacial: separar cajas en colisión dentro del área segura de pantalla
-        const bounds = { minX: 4, maxX: SCREEN_W - 4, minY: 24, maxY: SCREEN_H - 12 };
-        relaxLabelBoxes(labelBoxes, bounds, 20);
-
-        // Suavizado temporal continuo y renderizado de TODAS las etiquetas
-        for (let k = 0; k < labelBoxes.length; k++) {
-          const box = labelBoxes[k];
-          const targetShiftX = box.cx - box.origX;
-          const targetShiftY = box.cy - box.origY;
-
-          let shift = streetLabelShiftMap.get(box.name);
-          if (!shift) {
-            shift = { dx: targetShiftX, dy: targetShiftY, lastSeen: labelAnimFrameCount };
-            streetLabelShiftMap.set(box.name, shift);
-          } else {
-            const easing = 0.22;
-            shift.dx += (targetShiftX - shift.dx) * easing;
-            shift.dy += (targetShiftY - shift.dy) * easing;
-            shift.lastSeen = labelAnimFrameCount;
-          }
-
-          const renderCx = box.origX + shift.dx;
-          const renderCy = box.origY + shift.dy;
-          const bx = Math.round(renderCx - box.w / 2);
-          const by = Math.round(renderCy - box.h / 2);
 
           ctx.save();
-          ctx.globalAlpha = streetLabelOpacity;
+          // Trasladar al centro exacto del tramo y rotar tangencialmente a la calle
+          ctx.translate(item.mx, item.my);
+          ctx.rotate(item.angle);
 
-          drawBadge(ctx, bx, by, box.w, box.h, 2, theme.labelBg, box.badgeBorderColor);
+          // 1. Halo protector en color de fondo del mapa para máximo contraste y legibilidad
+          ctx.strokeStyle = theme.mapBg;
+          ctx.lineWidth = 3.2;
+          ctx.lineJoin = "round";
+          ctx.miterLimit = 2;
+          ctx.strokeText(item.formattedName, 0, -6.0);
 
+          // 2. Texto tipográfico limpio en minúsculas flotando justo arriba de la calzada
           ctx.fillStyle = theme.labelText;
-          ctx.textAlign = "center";
-          if (box.lines.length === 1) {
-            ctx.fillText(box.lines[0], renderCx, renderCy + 0.5);
-          } else {
-            ctx.fillText(box.lines[0], renderCx, renderCy - 5);
-            ctx.fillText(box.lines[1], renderCx, renderCy + 5);
-          }
+          ctx.fillText(item.formattedName, 0, -6.0);
 
           ctx.restore();
         }
 
         ctx.restore();
-
-        // Limpieza de etiquetas fuera de pantalla
-        if (labelAnimFrameCount % 120 === 0) {
-          for (const [key, shift] of streetLabelShiftMap.entries()) {
-            if (labelAnimFrameCount - shift.lastSeen > 90) {
-              streetLabelShiftMap.delete(key);
-            }
-          }
-        }
       }
 
       // ==========================================
