@@ -560,6 +560,79 @@
       return bestSplit;
     }
 
+    // =========================================================================
+    // MOTOR DE RECONCILIACIÓN ESPACIAL Y SUAVIZADO TEMPORAL DE ETIQUETAS
+    // =========================================================================
+    const streetLabelShiftMap = new Map();
+    const barrioLabelShiftMap = new Map();
+    const districtLabelShiftMap = new Map();
+    let labelAnimFrameCount = 0;
+
+    /**
+     * Reconciliación espacial de insignias (Anti-colisión por relajación física de fuerzas).
+     * En lugar de descartar etiquetas, las separa de forma armónica a lo largo del eje
+     * de mínima penetración (con preferencia vertical para etiquetas rectangulares) y
+     * las restringe estrictamente dentro de los límites visibles del viewport.
+     */
+    function relaxLabelBoxes(boxes, bounds, iterations = 20) {
+      if (!boxes || boxes.length <= 1) return;
+      const pad = 3;
+
+      for (let it = 0; it < iterations; it++) {
+        let moved = false;
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i];
+            const b = boxes[j];
+            const reqX = (a.w + b.w) / 2 + pad;
+            const reqY = (a.h + b.h) / 2 + pad;
+
+            let dx = a.cx - b.cx;
+            let dy = a.cy - b.cy;
+
+            if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
+              dx = (i - j) * 0.1;
+              dy = (i % 2 === 0 ? 1 : -1) * 0.1;
+            }
+
+            const overlapX = reqX - Math.abs(dx);
+            const overlapY = reqY - Math.abs(dy);
+
+            if (overlapX > 0 && overlapY > 0) {
+              moved = true;
+              const penX = overlapX / reqX;
+              // Las etiquetas son bandas horizontales alargadas; la separación vertical
+              // es mucho más sutil y mantiene la etiqueta más cerca de su vía.
+              const penY = (overlapY / reqY) * 0.65;
+
+              if (penY <= penX) {
+                const signY = dy >= 0 ? 1 : -1;
+                const shiftY = overlapY * 0.55;
+                a.cy += signY * shiftY;
+                b.cy -= signY * shiftY;
+              } else {
+                const signX = dx >= 0 ? 1 : -1;
+                const shiftX = overlapX * 0.55;
+                a.cx += signX * shiftX;
+                b.cx -= signX * shiftX;
+              }
+            }
+          }
+        }
+
+        // Restringir cajas dentro de los márgenes visibles del viewport
+        for (let i = 0; i < boxes.length; i++) {
+          const b = boxes[i];
+          const halfW = b.w / 2;
+          const halfH = b.h / 2;
+          b.cx = Math.max(bounds.minX + halfW, Math.min(bounds.maxX - halfW, b.cx));
+          b.cy = Math.max(bounds.minY + halfH, Math.min(bounds.maxY - halfH, b.cy));
+        }
+
+        if (!moved) break;
+      }
+    }
+
     async function reverseGeocodeRealLocation(lat, lon) {
       try {
         const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`;
@@ -1052,8 +1125,8 @@
 
       // 2. CAPA 1: RED VIAL (Color por distrito, grosor por jerarquía, opacidad preparada)
       const districtBatches = {};
-      const majorCandidates = [];
-      const minorCandidates = [];
+      const majorCandidatesMap = new Map();
+      const minorCandidatesMap = new Map();
 
       for (let i = 0; i < mapSegments.length; i++) {
         const seg = mapSegments[i];
@@ -1106,25 +1179,35 @@
           batch.sec.push(sx1, sy1, sx2, sy2);
         }
 
-        // Candidatos con nombre para etiquetas flotantes de calles (principales y secundarias separadas)
+        // Candidatos con nombre para etiquetas flotantes de calles (deduplicados reteniendo el punto más cercano al centro de visión)
         if (seg.name && seg.name.length > 1) {
           const mx = (sx1 + sx2) / 2;
           const my = (sy1 + sy2) / 2;
-          if (mx >= 35 && mx <= SCREEN_W - 35 && my >= 36 && my <= SCREEN_H - 24) {
-            if (isMajor && majorCandidates.length < 24) {
-              majorCandidates.push({
-                name: seg.name,
-                mx, my,
-                isMajor: true,
-                districtKey: distKey
-              });
-            } else if (!isMajor && minorCandidates.length < 32) {
-              minorCandidates.push({
-                name: seg.name,
-                mx, my,
-                isMajor: false,
-                districtKey: distKey
-              });
+          if (mx >= 24 && mx <= SCREEN_W - 24 && my >= 28 && my <= SCREEN_H - 18) {
+            const key = seg.name.trim().toLowerCase();
+            const distCenter = Math.hypot(mx - CENTER_X, my - CENTER_Y);
+            if (isMajor) {
+              const existing = majorCandidatesMap.get(key);
+              if (!existing || distCenter < existing.distCenter) {
+                majorCandidatesMap.set(key, {
+                  name: seg.name,
+                  mx, my,
+                  isMajor: true,
+                  districtKey: distKey,
+                  distCenter
+                });
+              }
+            } else {
+              const existing = minorCandidatesMap.get(key);
+              if (!existing || distCenter < existing.distCenter) {
+                minorCandidatesMap.set(key, {
+                  name: seg.name,
+                  mx, my,
+                  isMajor: false,
+                  districtKey: distKey,
+                  distCenter
+                });
+              }
             }
           }
         }
@@ -1188,62 +1271,67 @@
 
       // ==========================================
       // C) ETIQUETAS DE CALLES FLOTANTES EN MINÚSCULAS (ej: "c. marina"):
-      // - Zona Cercana (240m - 750m): Sin prioridad de vías principales sobre secundarias.
-      //   Ambas compiten por cercanía al usuario (centro de pantalla) para dar visibilidad local.
-      // - Zona Media (750m - 1500m): SÍ se priorizan vías principales sobre secundarias.
-      //   Las principales van primero, y las secundarias llenan los huecos libres.
-      // - Zona de Barrios y Distante (> 1500m): Se ocultan todas las etiquetas de calles.
+      // - Priorización según zona de zoom:
+      //   * Zona Cercana (240m - 750m): Sin prioridad de vías principales sobre secundarias.
+      //     Todas las vías compiten por cercanía al usuario (centro de pantalla) para dar visibilidad local.
+      //   * Zona Media (750m - 1500m): SÍ se priorizan vías principales sobre secundarias.
+      //     Las principales van primero, y las secundarias completan el cupo hasta 6 etiquetas.
       // - Cupo máximo: hasta 6 etiquetas simultáneas.
+      // - SE MUESTRAN TODAS LAS 6 ETIQUETAS: Ninguna etiqueta se descarta por colisión.
+      // - Reconciliación espacial relajada + suavizado temporal (smooth easing) para evitar superposiciones.
+      // - Zona de Barrios y Distante (> 1500m): Se ocultan todas las etiquetas de calles.
       // ==========================================
       const streetLabelOpacity = Math.max(0, Math.min(1.0, 1.0 - (smoothViewMeters - 1450) / 100));
 
       if (streetLabelOpacity > 0.02) {
+        labelAnimFrameCount++;
+
         ctx.save();
         ctx.font = "500 8.5px 'IBM Plex Mono', monospace";
         ctx.textBaseline = "middle";
 
-        const drawnNames = new Set();
-        const placedBoxes = [];
-        let labelsCount = 0;
-
-        // Construcción de la lista de candidatos según zona:
+        // Selección rigurosa de las hasta 6 etiquetas según zona:
         const candidateList = [];
         const isNearZone = smoothViewMeters <= 750;
 
         if (isNearZone) {
           // En Zona Cercana (240m - 750m): NO se priorizan principales sobre secundarias.
-          // Se combinan ambas y se ordenan por proximidad al usuario (centro de la pantalla)
-          for (let m = 0; m < majorCandidates.length; m++) candidateList.push(majorCandidates[m]);
-          for (let m = 0; m < minorCandidates.length; m++) candidateList.push(minorCandidates[m]);
-          candidateList.sort((a, b) => {
-            const da = Math.hypot(a.mx - CENTER_X, a.my - CENTER_Y);
-            const db = Math.hypot(b.mx - CENTER_X, b.my - CENTER_Y);
-            return da - db;
-          });
+          // Se combinan todas las calles únicas y se ordenan por proximidad al usuario (centro de la pantalla).
+          const allUnique = [...majorCandidatesMap.values()];
+          for (const item of minorCandidatesMap.values()) {
+            if (!majorCandidatesMap.has(item.name.trim().toLowerCase())) {
+              allUnique.push(item);
+            }
+          }
+          allUnique.sort((a, b) => a.distCenter - b.distCenter);
+          for (let m = 0; m < Math.min(6, allUnique.length); m++) {
+            candidateList.push(allUnique[m]);
+          }
         } else {
           // En Zona Media (750m - 1500m): SÍ se priorizan vías principales sobre secundarias.
-          // Las principales van primero (ordenadas por cercanía al centro),
-          // y luego las secundarias para completar el cupo de hasta 6 etiquetas.
-          majorCandidates.sort((a, b) => {
-            const da = Math.hypot(a.mx - CENTER_X, a.my - CENTER_Y);
-            const db = Math.hypot(b.mx - CENTER_X, b.my - CENTER_Y);
-            return da - db;
-          });
-          minorCandidates.sort((a, b) => {
-            const da = Math.hypot(a.mx - CENTER_X, a.my - CENTER_Y);
-            const db = Math.hypot(b.mx - CENTER_X, b.my - CENTER_Y);
-            return da - db;
-          });
-          for (let m = 0; m < majorCandidates.length; m++) candidateList.push(majorCandidates[m]);
-          for (let m = 0; m < minorCandidates.length; m++) candidateList.push(minorCandidates[m]);
+          // Las vías principales van primero (ordenadas por cercanía al centro),
+          // y luego las secundarias completan el cupo hasta 6 etiquetas.
+          const majors = [...majorCandidatesMap.values()].sort((a, b) => a.distCenter - b.distCenter);
+          const minors = [];
+          for (const item of minorCandidatesMap.values()) {
+            if (!majorCandidatesMap.has(item.name.trim().toLowerCase())) {
+              minors.push(item);
+            }
+          }
+          minors.sort((a, b) => a.distCenter - b.distCenter);
+
+          for (let m = 0; m < majors.length && candidateList.length < 6; m++) {
+            candidateList.push(majors[m]);
+          }
+          for (let m = 0; m < minors.length && candidateList.length < 6; m++) {
+            candidateList.push(minors[m]);
+          }
         }
 
+        // Construir cajas con dimensiones exactas según texto
+        const labelBoxes = [];
         for (let k = 0; k < candidateList.length; k++) {
           const item = candidateList[k];
-          if (labelsCount >= 6) break;
-          if (drawnNames.has(item.name)) continue;
-
-          // Las etiquetas de calles siempre en minúsculas (ej: "c. marina")
           const streetNameLower = item.name.toLowerCase();
           const lines = splitStreetNameToLines(streetNameLower);
           const badgeBorderColor = getDistrictColor(item.districtKey, currentThemeKey);
@@ -1257,51 +1345,79 @@
           } else {
             const tw1 = ctx.measureText(lines[0]).width;
             const tw2 = ctx.measureText(lines[1]).width;
-            const maxTw = Math.max(tw1, tw2);
-            badgeW = Math.round(maxTw + 8);
+            badgeW = Math.round(Math.max(tw1, tw2) + 8);
             badgeH = 23;
           }
 
-          const bx = Math.round(item.mx - badgeW / 2);
-          const by = Math.round(item.my - badgeH / 2);
+          const origX = item.mx;
+          const origY = item.my;
 
-          // Verificar límites del viewport (evitando solapar barra superior y escala inferior)
-          if (bx < 4 || bx + badgeW > SCREEN_W - 4 || by < 24 || by + badgeH > SCREEN_H - 12) {
-            continue;
+          labelBoxes.push({
+            name: streetNameLower,
+            lines,
+            badgeBorderColor,
+            w: badgeW,
+            h: badgeH,
+            origX,
+            origY,
+            cx: origX,
+            cy: origY
+          });
+        }
+
+        // Reconciliación espacial: separar cajas en colisión dentro del área segura de pantalla
+        const bounds = { minX: 4, maxX: SCREEN_W - 4, minY: 24, maxY: SCREEN_H - 12 };
+        relaxLabelBoxes(labelBoxes, bounds, 20);
+
+        // Suavizado temporal continuo y renderizado de TODAS las etiquetas
+        for (let k = 0; k < labelBoxes.length; k++) {
+          const box = labelBoxes[k];
+          const targetShiftX = box.cx - box.origX;
+          const targetShiftY = box.cy - box.origY;
+
+          let shift = streetLabelShiftMap.get(box.name);
+          if (!shift) {
+            shift = { dx: targetShiftX, dy: targetShiftY, lastSeen: labelAnimFrameCount };
+            streetLabelShiftMap.set(box.name, shift);
+          } else {
+            const easing = 0.22;
+            shift.dx += (targetShiftX - shift.dx) * easing;
+            shift.dy += (targetShiftY - shift.dy) * easing;
+            shift.lastSeen = labelAnimFrameCount;
           }
 
-          // Anti-colisión espacial AABB (con 3px de margen de seguridad entre insignias)
-          let collides = false;
-          for (let p = 0; p < placedBoxes.length; p++) {
-            const b = placedBoxes[p];
-            if (!(bx + badgeW + 3 < b.bx || bx > b.bx + b.badgeW + 3 || by + badgeH + 3 < b.by || by > b.by + b.badgeH + 3)) {
-              collides = true;
-              break;
-            }
-          }
-          if (collides) continue;
+          const renderCx = box.origX + shift.dx;
+          const renderCy = box.origY + shift.dy;
+          const bx = Math.round(renderCx - box.w / 2);
+          const by = Math.round(renderCy - box.h / 2);
 
           ctx.save();
           ctx.globalAlpha = streetLabelOpacity;
 
-          drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+          drawBadge(ctx, bx, by, box.w, box.h, 2, theme.labelBg, box.badgeBorderColor);
 
           ctx.fillStyle = theme.labelText;
           ctx.textAlign = "center";
-          if (lines.length === 1) {
-            ctx.fillText(lines[0], item.mx, item.my + 0.5);
+          if (box.lines.length === 1) {
+            ctx.fillText(box.lines[0], renderCx, renderCy + 0.5);
           } else {
-            ctx.fillText(lines[0], item.mx, item.my - 5);
-            ctx.fillText(lines[1], item.mx, item.my + 5);
+            ctx.fillText(box.lines[0], renderCx, renderCy - 5);
+            ctx.fillText(box.lines[1], renderCx, renderCy + 5);
           }
 
           ctx.restore();
-
-          drawnNames.add(item.name);
-          placedBoxes.push({ bx, by, badgeW, badgeH });
-          labelsCount++;
         }
+
         ctx.restore();
+
+        // Limpieza de etiquetas fuera de pantalla
+        if (labelAnimFrameCount % 120 === 0) {
+          for (const [key, shift] of streetLabelShiftMap.entries()) {
+            if (labelAnimFrameCount - shift.lastSeen > 90) {
+              streetLabelShiftMap.delete(key);
+            }
+          }
+        }
       }
 
       // ==========================================
@@ -1327,11 +1443,9 @@
           return { ...b, dx, dy, d2: dx * dx + dy * dy };
         }).sort((a, b) => a.d2 - b.d2);
 
-        const placedBarrioBoxes = [];
-        let barrioCount = 0;
-
+        const visibleBarrios = [];
         for (let d = 0; d < sortedBarris.length; d++) {
-          if (barrioCount >= 8) break;
+          if (visibleBarrios.length >= 8) break;
           const barriObj = sortedBarris[d];
 
           const rx = barriObj.dx * cosH - barriObj.dy * sinH;
@@ -1340,6 +1454,14 @@
           const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
           const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
 
+          if (sx >= 10 && sx <= SCREEN_W - 10 && sy >= 26 && sy <= SCREEN_H - 14) {
+            visibleBarrios.push({ ...barriObj, sx, sy });
+          }
+        }
+
+        const barrioBoxes = [];
+        for (let d = 0; d < visibleBarrios.length; d++) {
+          const barriObj = visibleBarrios[d];
           const formattedName = formatBarriName(barriObj.barri);
           const lines = splitBarriNameToLines(formattedName);
           const distKey = normalizeDistrictName(barriObj.dist);
@@ -1347,7 +1469,6 @@
 
           let badgeW = 0;
           let badgeH = 0;
-
           if (lines.length === 1) {
             const tw = ctx.measureText(lines[0]).width;
             badgeW = Math.round(tw + 8);
@@ -1355,47 +1476,68 @@
           } else {
             const tw1 = ctx.measureText(lines[0]).width;
             const tw2 = ctx.measureText(lines[1]).width;
-            const maxTw = Math.max(tw1, tw2);
-            badgeW = Math.round(maxTw + 8);
+            badgeW = Math.round(Math.max(tw1, tw2) + 8);
             badgeH = 22;
           }
 
-          const bx = Math.round(sx - badgeW / 2);
-          const by = Math.round(sy - badgeH / 2);
+          barrioBoxes.push({
+            name: formattedName,
+            lines,
+            badgeBorderColor,
+            w: badgeW,
+            h: badgeH,
+            origX: barriObj.sx,
+            origY: barriObj.sy,
+            cx: barriObj.sx,
+            cy: barriObj.sy
+          });
+        }
 
-          // Verificar límites del viewport (evitando barra superior de 22px y escala inferior)
-          if (bx < 4 || bx + badgeW > SCREEN_W - 4 || by < 24 || by + badgeH > SCREEN_H - 12) {
-            continue;
+        const barrioBounds = { minX: 4, maxX: SCREEN_W - 4, minY: 24, maxY: SCREEN_H - 12 };
+        relaxLabelBoxes(barrioBoxes, barrioBounds, 18);
+
+        for (let d = 0; d < barrioBoxes.length; d++) {
+          const box = barrioBoxes[d];
+          const targetShiftX = box.cx - box.origX;
+          const targetShiftY = box.cy - box.origY;
+
+          let shift = barrioLabelShiftMap.get(box.name);
+          if (!shift) {
+            shift = { dx: targetShiftX, dy: targetShiftY, lastSeen: labelAnimFrameCount };
+            barrioLabelShiftMap.set(box.name, shift);
+          } else {
+            const easing = 0.22;
+            shift.dx += (targetShiftX - shift.dx) * easing;
+            shift.dy += (targetShiftY - shift.dy) * easing;
+            shift.lastSeen = labelAnimFrameCount;
           }
 
-          // Anti-colisión espacial AABB (con 3px de margen de seguridad entre insignias)
-          let collides = false;
-          for (let p = 0; p < placedBarrioBoxes.length; p++) {
-            const b = placedBarrioBoxes[p];
-            if (!(bx + badgeW + 3 < b.bx || bx > b.bx + b.badgeW + 3 || by + badgeH + 3 < b.by || by > b.by + b.badgeH + 3)) {
-              collides = true;
-              break;
-            }
-          }
-          if (collides) continue;
+          const renderCx = box.origX + shift.dx;
+          const renderCy = box.origY + shift.dy;
+          const bx = Math.round(renderCx - box.w / 2);
+          const by = Math.round(renderCy - box.h / 2);
 
-          // Dibujar insignia de barrio (borde del color de su distrito)
-          drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+          drawBadge(ctx, bx, by, box.w, box.h, 2, theme.labelBg, box.badgeBorderColor);
 
           ctx.fillStyle = theme.labelText;
           ctx.textAlign = "center";
-
-          if (lines.length === 1) {
-            ctx.fillText(lines[0], sx, sy + 0.5);
+          if (box.lines.length === 1) {
+            ctx.fillText(box.lines[0], renderCx, renderCy + 0.5);
           } else {
-            ctx.fillText(lines[0], sx, sy - 4.5);
-            ctx.fillText(lines[1], sx, sy + 4.5);
+            ctx.fillText(box.lines[0], renderCx, renderCy - 4.5);
+            ctx.fillText(box.lines[1], renderCx, renderCy + 4.5);
           }
-
-          placedBarrioBoxes.push({ bx, by, badgeW, badgeH });
-          barrioCount++;
         }
+
         ctx.restore();
+
+        if (labelAnimFrameCount % 120 === 0) {
+          for (const [key, shift] of barrioLabelShiftMap.entries()) {
+            if (labelAnimFrameCount - shift.lastSeen > 90) {
+              barrioLabelShiftMap.delete(key);
+            }
+          }
+        }
       }
 
       // ==========================================
@@ -1418,8 +1560,7 @@
           return { ...d, dx, dy, d2: dx * dx + dy * dy };
         }).sort((a, b) => a.d2 - b.d2);
 
-        const placedDistrictBoxes = [];
-
+        const visibleDistricts = [];
         for (let d = 0; d < sortedDistricts.length; d++) {
           const distObj = sortedDistricts[d];
 
@@ -1429,12 +1570,19 @@
           const sx = Math.round(CENTER_X + rx * currentPixelsPerMeter);
           const sy = Math.round(CENTER_Y - ry * currentPixelsPerMeter);
 
+          if (sx >= 10 && sx <= SCREEN_W - 10 && sy >= 24 && sy <= SCREEN_H - 12) {
+            visibleDistricts.push({ ...distObj, sx, sy });
+          }
+        }
+
+        const districtBoxes = [];
+        for (let d = 0; d < visibleDistricts.length; d++) {
+          const distObj = visibleDistricts[d];
           const lines = splitDistrictNameToLines(distObj.name.toUpperCase());
           const badgeBorderColor = getDistrictColor(distObj.key, currentThemeKey);
 
           let badgeW = 0;
           let badgeH = 0;
-
           if (lines.length === 1) {
             const tw = ctx.measureText(lines[0]).width;
             badgeW = Math.round(tw + 8);
@@ -1442,46 +1590,68 @@
           } else {
             const tw1 = ctx.measureText(lines[0]).width;
             const tw2 = ctx.measureText(lines[1]).width;
-            const maxTw = Math.max(tw1, tw2);
-            badgeW = Math.round(maxTw + 8);
+            badgeW = Math.round(Math.max(tw1, tw2) + 8);
             badgeH = 20;
           }
 
-          const bx = Math.round(sx - badgeW / 2);
-          const by = Math.round(sy - badgeH / 2);
+          districtBoxes.push({
+            name: distObj.name.toUpperCase(),
+            lines,
+            badgeBorderColor,
+            w: badgeW,
+            h: badgeH,
+            origX: distObj.sx,
+            origY: distObj.sy,
+            cx: distObj.sx,
+            cy: distObj.sy
+          });
+        }
 
-          // Verificar límites del viewport (evitando solapar con la barra superior de 22px y la escala inferior)
-          if (bx < 2 || bx + badgeW > SCREEN_W - 2 || by < 24 || by + badgeH > SCREEN_H - 10) {
-            continue;
+        const distBounds = { minX: 4, maxX: SCREEN_W - 4, minY: 24, maxY: SCREEN_H - 12 };
+        relaxLabelBoxes(districtBoxes, distBounds, 18);
+
+        for (let d = 0; d < districtBoxes.length; d++) {
+          const box = districtBoxes[d];
+          const targetShiftX = box.cx - box.origX;
+          const targetShiftY = box.cy - box.origY;
+
+          let shift = districtLabelShiftMap.get(box.name);
+          if (!shift) {
+            shift = { dx: targetShiftX, dy: targetShiftY, lastSeen: labelAnimFrameCount };
+            districtLabelShiftMap.set(box.name, shift);
+          } else {
+            const easing = 0.22;
+            shift.dx += (targetShiftX - shift.dx) * easing;
+            shift.dy += (targetShiftY - shift.dy) * easing;
+            shift.lastSeen = labelAnimFrameCount;
           }
 
-          // Evitar colisión entre etiquetas de distritos (AABB exacto)
-          let collides = false;
-          for (let p = 0; p < placedDistrictBoxes.length; p++) {
-            const b = placedDistrictBoxes[p];
-            if (!(bx + badgeW < b.bx || bx > b.bx + b.badgeW || by + badgeH < b.by || by > b.by + b.badgeH)) {
-              collides = true;
-              break;
-            }
-          }
-          if (collides) continue;
+          const renderCx = box.origX + shift.dx;
+          const renderCy = box.origY + shift.dy;
+          const bx = Math.round(renderCx - box.w / 2);
+          const by = Math.round(renderCy - box.h / 2);
 
-          // Dibujar insignia (badge)
-          drawBadge(ctx, bx, by, badgeW, badgeH, 2, theme.labelBg, badgeBorderColor);
+          drawBadge(ctx, bx, by, box.w, box.h, 2, theme.labelBg, box.badgeBorderColor);
 
           ctx.fillStyle = theme.labelText;
           ctx.textAlign = "center";
-
-          if (lines.length === 1) {
-            ctx.fillText(lines[0], sx, sy + 0.5);
+          if (box.lines.length === 1) {
+            ctx.fillText(box.lines[0], renderCx, renderCy + 0.5);
           } else {
-            ctx.fillText(lines[0], sx, sy - 4.5);
-            ctx.fillText(lines[1], sx, sy + 4.5);
+            ctx.fillText(box.lines[0], renderCx, renderCy - 4.5);
+            ctx.fillText(box.lines[1], renderCx, renderCy + 4.5);
           }
-
-          placedDistrictBoxes.push({ bx, by, badgeW, badgeH });
         }
+
         ctx.restore();
+
+        if (labelAnimFrameCount % 120 === 0) {
+          for (const [key, shift] of districtLabelShiftMap.entries()) {
+            if (labelAnimFrameCount - shift.lastSeen > 90) {
+              districtLabelShiftMap.delete(key);
+            }
+          }
+        }
       }
 
       // 4. HUD SUPERIOR: ENCABEZADO "DISTRITO | BARRIO" + PUNTO 7PX DEL DISTRITO + BOTÓN SOL/LUNA
