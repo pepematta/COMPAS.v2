@@ -88,8 +88,8 @@ function drawWater(ctx, view, theme) {
   const riverWidth = isGeoZone ? 2.2 : 1.7;
   const coastWidth = 1.0;
 
-  // A) Línea de costa y puertos con el mismo color y grosor que las curvas de nivel
-  ctx.strokeStyle = theme.waterCoast;
+  // A) Línea de costa y puertos con el mismo color gris y grosor que las curvas de nivel
+  ctx.strokeStyle = theme.topoLine;
   ctx.lineWidth = coastWidth;
   ctx.beginPath();
   for (let w = 0; w < activeWaterLines.length; w++) {

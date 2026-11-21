@@ -91,42 +91,48 @@ function sliceTopographyFromMaster(lat, lon) {
 function sliceWaterFromMaster(lat, lon) {
   if (!bcnWaterData || !originInitialized) return;
 
-  const lines = bcnWaterData;
   const processed = [];
   const mPerDegLat = METERS_PER_DEG_LAT;
   const mPerDegLon = METERS_PER_DEG_LON;
 
-  for (let i = 0; i < lines.length; i++) {
-    const poly = lines[i];
-    if (!poly || poly.length < 2) continue;
+  function addPolylineList(list, isRiver) {
+    if (!list || !list.length) return;
+    for (let i = 0; i < list.length; i++) {
+      const poly = list[i];
+      if (!poly || poly.length < 2) continue;
 
-    const count = poly.length;
-    const pts = new Int32Array(count * 2);
-    let minX = 999999, maxX = -999999, minY = 999999, maxY = -999999;
+      const count = poly.length;
+      const pts = new Int32Array(count * 2);
+      let minX = 999999, maxX = -999999, minY = 999999, maxY = -999999;
 
-    for (let j = 0; j < count; j++) {
-      const pt = poly[j];
-      const x = Math.round((pt[1] - MAP_ORIGIN_LON) * mPerDegLon);
-      const y = Math.round((pt[0] - MAP_ORIGIN_LAT) * mPerDegLat);
-      pts[j * 2] = x;
-      pts[j * 2 + 1] = y;
+      for (let j = 0; j < count; j++) {
+        const pt = poly[j];
+        const x = Math.round((pt[1] - MAP_ORIGIN_LON) * mPerDegLon);
+        const y = Math.round((pt[0] - MAP_ORIGIN_LAT) * mPerDegLat);
+        pts[j * 2] = x;
+        pts[j * 2 + 1] = y;
 
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      processed.push({
+        pts,
+        count,
+        minX, maxX, minY, maxY,
+        isRiver,
+        id: processed.length
+      });
     }
+  }
 
-    // Identificar si corresponde a cursos de agua de ríos principales (Besòs / Llobregat)
-    const isRiver = (i === 0 || i === 46 || i === 35 || i === 22 || i === 144 || i === 133 || i === 56 || i === 63 || i === 2 || i === 57 || i === 23 || i === 53 || i === 1 || i === 18 || i === 145 || i === 16 || i === 38 || i === 55 || i === 59 || i === 17 || i === 108 || i === 19);
-
-    processed.push({
-      pts,
-      count,
-      minX, maxX, minY, maxY,
-      isRiver,
-      id: i
-    });
+  if (bcnWaterData.rivers || bcnWaterData.coast) {
+    addPolylineList(bcnWaterData.coast, false);
+    addPolylineList(bcnWaterData.rivers, true);
+  } else if (Array.isArray(bcnWaterData)) {
+    addPolylineList(bcnWaterData, false);
   }
 
   activeWaterLines = processed;
