@@ -7,6 +7,8 @@ let bcnTopographyData = null;
 let bcnWaterData = null;
 let activeTopographyLines = [];
 let activeWaterLines = [];
+let activeRiverLines = [];
+let activeCoastLines = [];
 let mapSegments = [];
 let isFetchingStreets = false;
 
@@ -87,45 +89,44 @@ function sliceTopographyFromMaster(lat, lon) {
   lastTopoSlicedLon = lon;
 }
 
-// 3. CORTE ESPACIAL VECTORIAL: RÍOS (Besòs y Llobregat)
+// 3. CORTE ESPACIAL VECTORIAL: AGUA (Ríos y Costa)
 function sliceWaterFromMaster(lat, lon) {
   if (!bcnWaterData || !originInitialized) return;
 
-  const lines = Array.isArray(bcnWaterData) ? bcnWaterData : (bcnWaterData.rivers || []);
-  const processed = [];
   const mPerDegLat = METERS_PER_DEG_LAT;
   const mPerDegLon = METERS_PER_DEG_LON;
 
-  for (let i = 0; i < lines.length; i++) {
-    const poly = lines[i];
-    if (!poly || poly.length < 2) continue;
+  function processPolys(list) {
+    if (!list) return [];
+    const res = [];
+    for (let i = 0; i < list.length; i++) {
+      const poly = list[i];
+      if (!poly || poly.length < 2) continue;
 
-    const count = poly.length;
-    const pts = new Int32Array(count * 2);
-    let minX = 999999, maxX = -999999, minY = 999999, maxY = -999999;
+      const count = poly.length;
+      const pts = new Int32Array(count * 2);
+      let minX = 999999, maxX = -999999, minY = 999999, maxY = -999999;
 
-    for (let j = 0; j < count; j++) {
-      const pt = poly[j];
-      const x = Math.round((pt[1] - MAP_ORIGIN_LON) * mPerDegLon);
-      const y = Math.round((pt[0] - MAP_ORIGIN_LAT) * mPerDegLat);
-      pts[j * 2] = x;
-      pts[j * 2 + 1] = y;
+      for (let j = 0; j < count; j++) {
+        const pt = poly[j];
+        const x = Math.round((pt[1] - MAP_ORIGIN_LON) * mPerDegLon);
+        const y = Math.round((pt[0] - MAP_ORIGIN_LAT) * mPerDegLat);
+        pts[j * 2] = x;
+        pts[j * 2 + 1] = y;
 
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      res.push({ pts, count, minX, maxX, minY, maxY });
     }
-
-    processed.push({
-      pts,
-      count,
-      minX, maxX, minY, maxY,
-      id: i
-    });
+    return res;
   }
 
-  activeWaterLines = processed;
+  activeRiverLines = processPolys(Array.isArray(bcnWaterData) ? bcnWaterData : (bcnWaterData.rivers || []));
+  activeCoastLines = processPolys(bcnWaterData.coast || []);
 }
 
 // 4. CORTE ESPACIAL VECTORIAL: CALLES
@@ -372,6 +373,8 @@ async function forceRefreshMap() {
       bcnTopographyData = null;
       bcnWaterData = null;
       activeWaterLines = [];
+      activeRiverLines = [];
+      activeCoastLines = [];
       activeTopographyLines = [];
       await loadBarcelonaMasterIfAvailable(lat, lon);
     } else {

@@ -74,50 +74,80 @@ function drawTopography(ctx, view, theme) {
   ctx.restore();
 }
 
-// 2. CAPA 1: CURSOS FLUVIALES EN CELESTE (Riu Besòs y Riu Llobregat)
+// 2. CAPA 1: AGUA (Línea de costa en color relieve + Cursos fluviales en celeste)
 function drawWater(ctx, view, theme) {
-  if (activeWaterLines.length === 0) return;
-
   const waterAlpha = smoothstep(4000, 9500, view.smoothMeters);
   if (waterAlpha <= 0.02) return;
 
   ctx.save();
   ctx.globalAlpha = waterAlpha;
 
-  const isGeoZone = view.smoothMeters >= 11800;
-  const riverWidth = isGeoZone ? 2.2 : 1.7;
+  // A) Línea costera: MISMO COLOR QUE LAS CURVAS DE NIVEL
+  if (activeCoastLines.length > 0) {
+    ctx.strokeStyle = theme.topoLine;
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    for (let w = 0; w < activeCoastLines.length; w++) {
+      const line = activeCoastLines[w];
+      const dxMin = line.minX - view.uX;
+      const dxMax = line.maxX - view.uX;
+      const dyMin = line.minY - view.uY;
+      const dyMax = line.maxY - view.uY;
+      if (dxMax < -view.cullingRadius || dxMin > view.cullingRadius || dyMax < -view.cullingRadius || dyMin > view.cullingRadius) continue;
 
-  // Cursos fluviales destacados en CELESTE (Besòs y Llobregat)
-  ctx.strokeStyle = theme.waterRiver;
-  ctx.lineWidth = riverWidth;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.beginPath();
-  for (let w = 0; w < activeWaterLines.length; w++) {
-    const line = activeWaterLines[w];
-
-    const dxMin = line.minX - view.uX;
-    const dxMax = line.maxX - view.uX;
-    const dyMin = line.minY - view.uY;
-    const dyMax = line.maxY - view.uY;
-    if (dxMax < -view.cullingRadius || dxMin > view.cullingRadius || dyMax < -view.cullingRadius || dyMin > view.cullingRadius) continue;
-
-    const pts = line.pts;
-    const count = line.count;
-    for (let p = 0; p < count; p++) {
-      const mx = pts[p * 2];
-      const my = pts[p * 2 + 1];
-      const dx = mx - view.uX;
-      const dy = my - view.uY;
-      const rx = dx * view.cosH - dy * view.sinH;
-      const ry = dx * view.sinH + dy * view.cosH;
-      const sx = Math.round(CENTER_X + rx * view.ppm);
-      const sy = Math.round(CENTER_Y - ry * view.ppm);
-      if (p === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
+      const pts = line.pts;
+      const count = line.count;
+      for (let p = 0; p < count; p++) {
+        const mx = pts[p * 2];
+        const my = pts[p * 2 + 1];
+        const dx = mx - view.uX;
+        const dy = my - view.uY;
+        const rx = dx * view.cosH - dy * view.sinH;
+        const ry = dx * view.sinH + dy * view.cosH;
+        const sx = Math.round(CENTER_X + rx * view.ppm);
+        const sy = Math.round(CENTER_Y - ry * view.ppm);
+        if (p === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
     }
+    ctx.stroke();
   }
-  ctx.stroke();
+
+  // B) Cursos fluviales: CELESTE DESTACADO (Besòs y Llobregat)
+  if (activeRiverLines.length > 0) {
+    const isGeoZone = view.smoothMeters >= 11800;
+    const riverWidth = isGeoZone ? 2.2 : 1.7;
+
+    ctx.strokeStyle = theme.waterRiver;
+    ctx.lineWidth = riverWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let w = 0; w < activeRiverLines.length; w++) {
+      const line = activeRiverLines[w];
+      const dxMin = line.minX - view.uX;
+      const dxMax = line.maxX - view.uX;
+      const dyMin = line.minY - view.uY;
+      const dyMax = line.maxY - view.uY;
+      if (dxMax < -view.cullingRadius || dxMin > view.cullingRadius || dyMax < -view.cullingRadius || dyMin > view.cullingRadius) continue;
+
+      const pts = line.pts;
+      const count = line.count;
+      for (let p = 0; p < count; p++) {
+        const mx = pts[p * 2];
+        const my = pts[p * 2 + 1];
+        const dx = mx - view.uX;
+        const dy = my - view.uY;
+        const rx = dx * view.cosH - dy * view.sinH;
+        const ry = dx * view.sinH + dy * view.cosH;
+        const sx = Math.round(CENTER_X + rx * view.ppm);
+        const sy = Math.round(CENTER_Y - ry * view.ppm);
+        if (p === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
+    }
+    ctx.stroke();
+  }
 
   ctx.restore();
 }
