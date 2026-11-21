@@ -86,9 +86,9 @@ function drawWater(ctx, view, theme) {
 
   const isGeoZone = view.smoothMeters >= 11800;
   const riverWidth = isGeoZone ? 2.2 : 1.7;
-  const coastWidth = isGeoZone ? 1.3 : 1.0;
+  const coastWidth = 1.0;
 
-  // A) Línea de costa y puertos en celeste sutil
+  // A) Línea de costa y puertos con el mismo color y grosor que las curvas de nivel
   ctx.strokeStyle = theme.waterCoast;
   ctx.lineWidth = coastWidth;
   ctx.beginPath();

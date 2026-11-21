@@ -16,7 +16,7 @@ const THEMES = {
     labelText: '#2B2A27',
     userMarker: '#D1493B',
     waterRiver: '#0284C7',
-    waterCoast: 'rgba(2, 132, 199, 0.40)',
+    waterCoast: '#D5CDBE', // Mismo color que las curvas de nivel
     streetNeutral: '#C5BDB0'
   },
   dark: {
@@ -30,7 +30,7 @@ const THEMES = {
     labelText: '#E8E2D5',
     userMarker: '#E85D4A',
     waterRiver: '#38BDF8',
-    waterCoast: 'rgba(56, 189, 248, 0.40)',
+    waterCoast: '#253F35', // Mismo color que las curvas de nivel
     streetNeutral: '#3A5247'
   }
 };
