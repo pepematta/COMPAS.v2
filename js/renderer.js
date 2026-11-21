@@ -74,7 +74,7 @@ function drawTopography(ctx, view, theme) {
   ctx.restore();
 }
 
-// 2. CAPA 1: AGUA Y RÍOS EN CELESTE (Riu Besòs, Riu Llobregat, Costa y Puertos)
+// 2. CAPA 1: CURSOS FLUVIALES EN CELESTE (Riu Besòs y Riu Llobregat)
 function drawWater(ctx, view, theme) {
   if (activeWaterLines.length === 0) return;
 
@@ -86,40 +86,8 @@ function drawWater(ctx, view, theme) {
 
   const isGeoZone = view.smoothMeters >= 11800;
   const riverWidth = isGeoZone ? 2.2 : 1.7;
-  const coastWidth = 1.0;
 
-  // A) Línea de costa y puertos con el mismo color gris y grosor que las curvas de nivel
-  ctx.strokeStyle = theme.topoLine;
-  ctx.lineWidth = coastWidth;
-  ctx.beginPath();
-  for (let w = 0; w < activeWaterLines.length; w++) {
-    const line = activeWaterLines[w];
-    if (line.isRiver) continue;
-
-    const dxMin = line.minX - view.uX;
-    const dxMax = line.maxX - view.uX;
-    const dyMin = line.minY - view.uY;
-    const dyMax = line.maxY - view.uY;
-    if (dxMax < -view.cullingRadius || dxMin > view.cullingRadius || dyMax < -view.cullingRadius || dyMin > view.cullingRadius) continue;
-
-    const pts = line.pts;
-    const count = line.count;
-    for (let p = 0; p < count; p++) {
-      const mx = pts[p * 2];
-      const my = pts[p * 2 + 1];
-      const dx = mx - view.uX;
-      const dy = my - view.uY;
-      const rx = dx * view.cosH - dy * view.sinH;
-      const ry = dx * view.sinH + dy * view.cosH;
-      const sx = Math.round(CENTER_X + rx * view.ppm);
-      const sy = Math.round(CENTER_Y - ry * view.ppm);
-      if (p === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
-    }
-  }
-  ctx.stroke();
-
-  // B) Ríos principales (Riu Besòs y Riu Llobregat) en CELESTE destacado
+  // Cursos fluviales destacados en CELESTE (Besòs y Llobregat)
   ctx.strokeStyle = theme.waterRiver;
   ctx.lineWidth = riverWidth;
   ctx.lineCap = "round";
@@ -127,7 +95,6 @@ function drawWater(ctx, view, theme) {
   ctx.beginPath();
   for (let w = 0; w < activeWaterLines.length; w++) {
     const line = activeWaterLines[w];
-    if (!line.isRiver) continue;
 
     const dxMin = line.minX - view.uX;
     const dxMax = line.maxX - view.uX;
