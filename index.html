@@ -271,7 +271,7 @@
     const CENTER_Y = 128;
 
     const VIEW_METERS_NORMAL = 240.0;
-    const VIEW_METERS_PEEK   = 450.0;
+    const VIEW_METERS_PEEK   = 360.0;
     const VIEW_METERS_MAX    = 12000.0;
 
     let isPressing = false;
@@ -1020,14 +1020,14 @@
       if (isPressing) {
         targetDragRatio = Math.min(1.0, currentDragY / 160.0);
         // Mapeo progresivo calibrado para recorrer cómodamente las 4 zonas de zoom:
-        // - Zona Cercana (240m - 750m) en el primer 25% del recorrido (0 a 0.25)
-        // - Zona Media (750m - 1500m) entre el 25% y 50% del recorrido (0.25 a 0.50)
+        // - Zona Cercana (240m - 600m) en el primer 25% del recorrido (0 a 0.25)
+        // - Zona Media (600m - 1500m) entre el 25% y 50% del recorrido (0.25 a 0.50)
         // - Zona de Barrios (1500m - 2500m) entre el 50% y 75% del recorrido (0.50 a 0.75)
         // - Zona Distante (2500m - 12000m) en el 25% final (0.75 a 1.0)
         if (targetDragRatio <= 0.25) {
-          targetMeters = VIEW_METERS_PEEK + (targetDragRatio / 0.25) * (750.0 - VIEW_METERS_PEEK);
+          targetMeters = VIEW_METERS_PEEK + (targetDragRatio / 0.25) * (600.0 - VIEW_METERS_PEEK);
         } else if (targetDragRatio <= 0.50) {
-          targetMeters = 750.0 + ((targetDragRatio - 0.25) / 0.25) * (1500.0 - 750.0);
+          targetMeters = 600.0 + ((targetDragRatio - 0.25) / 0.25) * (1500.0 - 600.0);
         } else if (targetDragRatio <= 0.75) {
           targetMeters = 1500.0 + ((targetDragRatio - 0.50) / 0.25) * (2500.0 - 1500.0);
         } else {
@@ -1047,17 +1047,17 @@
       if (activeTopographyLines.length > 0) {
         ctx.save();
         ctx.strokeStyle = theme.topoLine;
-        ctx.lineWidth = (smoothViewMeters > 2500) ? 1.0 : (smoothViewMeters > 750 ? 0.85 : 0.75);
+        ctx.lineWidth = (smoothViewMeters > 2500) ? 1.0 : (smoothViewMeters > 600 ? 0.85 : 0.75);
         ctx.beginPath();
 
         // Nivel de detalle (LOD) dinámico para curvas de nivel armonizado con las 4 zonas:
-        // - Zona Cercana (<= 750m): Todas las curvas (intervalo 5m denso, paso 1)
-        // - Zona Media (750m - 1500m): Curvas maestras 20m + intermedias alternadas (paso 1)
+        // - Zona Cercana (<= 600m): Todas las curvas (intervalo 5m denso, paso 1)
+        // - Zona Media (600m - 1500m): Curvas maestras 20m + intermedias alternadas (paso 1)
         // - Zona de Barrios (1500m - 2500m): Curvas maestras de 20m (paso 2)
         // - Zona Distante (2500m - 12000m): Curvas maestras de 20m (paso 2 / paso 3 > 6000m)
         const isFarZoom = smoothViewMeters > 6000;
         const isMidZoom = smoothViewMeters > 1500;
-        const isTransition = smoothViewMeters > 750;
+        const isTransition = smoothViewMeters > 600;
         const pointStep = isFarZoom ? 3 : (isMidZoom ? 2 : 1);
 
         for (let t = 0; t < activeTopographyLines.length; t++) {
@@ -1215,8 +1215,8 @@
 
       // =========================================================================
       // ARQUITECTURA DE 4 CAPAS SEMÁNTICAS POR NIVEL DE ZOOM:
-      // 1. ZONA CERCANA  (240m - 750m): Todas las calles (100%) + etiquetas de calles en minúsculas (sin prioridad).
-      // 2. ZONA MEDIA    (750m - 1500m): Todas las calles (100%) + etiquetas de calles en minúsculas (priorizando vías principales).
+      // 1. ZONA CERCANA  (240m - 600m): Todas las calles (100%) + etiquetas de calles en minúsculas (sin prioridad).
+      // 2. ZONA MEDIA    (600m - 1500m): Todas las calles (100%) + etiquetas de calles en minúsculas (priorizando vías principales).
       // 3. ZONA DE BARRIOS (1500m - 2500m): Todas las calles (100%) + SÓLO etiquetas de barrios (primera letra mayúscula). Ninguna calle rotulada.
       // 4. ZONA DISTANTE (2500m - 12000m): Todas las calles (100%) + SÓLO etiquetas de distritos en mayúsculas.
       // =========================================================================
@@ -1272,9 +1272,9 @@
       // ==========================================
       // C) ETIQUETAS DE CALLES FLOTANTES EN MINÚSCULAS (ej: "c. marina"):
       // - Priorización según zona de zoom:
-      //   * Zona Cercana (240m - 750m): Sin prioridad de vías principales sobre secundarias.
+      //   * Zona Cercana (240m - 600m): Sin prioridad de vías principales sobre secundarias.
       //     Todas las vías compiten por cercanía al usuario (centro de pantalla) para dar visibilidad local.
-      //   * Zona Media (750m - 1500m): SÍ se priorizan vías principales sobre secundarias.
+      //   * Zona Media (600m - 1500m): SÍ se priorizan vías principales sobre secundarias.
       //     Las principales van primero, y las secundarias completan el cupo hasta 6 etiquetas.
       // - Cupo máximo: hasta 6 etiquetas simultáneas.
       // - SE MUESTRAN TODAS LAS 6 ETIQUETAS: Ninguna etiqueta se descarta por colisión.
@@ -1292,10 +1292,10 @@
 
         // Selección rigurosa de las hasta 6 etiquetas según zona:
         const candidateList = [];
-        const isNearZone = smoothViewMeters <= 750;
+        const isNearZone = smoothViewMeters <= 600;
 
         if (isNearZone) {
-          // En Zona Cercana (240m - 750m): NO se priorizan principales sobre secundarias.
+          // En Zona Cercana (240m - 600m): NO se priorizan principales sobre secundarias.
           // Se combinan todas las calles únicas y se ordenan por proximidad al usuario (centro de la pantalla).
           const allUnique = [...majorCandidatesMap.values()];
           for (const item of minorCandidatesMap.values()) {
@@ -1308,7 +1308,7 @@
             candidateList.push(allUnique[m]);
           }
         } else {
-          // En Zona Media (750m - 1500m): SÍ se priorizan vías principales sobre secundarias.
+          // En Zona Media (600m - 1500m): SÍ se priorizan vías principales sobre secundarias.
           // Las vías principales van primero (ordenadas por cercanía al centro),
           // y luego las secundarias completan el cupo hasta 6 etiquetas.
           const majors = [...majorCandidatesMap.values()].sort((a, b) => a.distCenter - b.distCenter);
@@ -1774,7 +1774,7 @@
         scaleMeters = 1000.0;
       } else if (currentViewMeters > 1500) {
         scaleMeters = 500.0;
-      } else if (currentViewMeters > 750) {
+      } else if (currentViewMeters > 600) {
         scaleMeters = 200.0;
       } else if (currentViewMeters > 380) {
         scaleMeters = 100.0;
